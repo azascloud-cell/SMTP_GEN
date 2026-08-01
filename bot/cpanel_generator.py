@@ -99,53 +99,140 @@ class _IFSession:
     PANEL_BASE  = "https://app.infinityfree.com"
     LOGIN_URL   = "https://app.infinityfree.com/login"
 
+    # Header mirip browser nyata
+    _BROWSER_HEADERS = {
+        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/125.0.0.0 Safari/537.36",
+        "Accept":          "text/html,application/xhtml+xml,application/xml;"
+                           "q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection":      "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest":  "document",
+        "Sec-Fetch-Mode":  "navigate",
+        "Sec-Fetch-Site":  "none",
+        "Cache-Control":   "max-age=0",
+    }
+
     def __init__(self):
         self.s = requests.Session()
-        self.s.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
+        self.s.headers.update(self._BROWSER_HEADERS)
         self._logged_in    = False
         self._account_id   = None
         self._vpanel_url   = None
+        self._login_error  = None
+
+    # ── Helper: ekstrak CSRF ──────────────────────────────────────────────────
+    @staticmethod
+    def _extract_csrf(html: str) -> str:
+        for pat in [
+            r'<input[^>]+name=["\']_token["\'][^>]+value=["\']([^"\']+)["\']',
+            r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)["\']',
+            r'"_token"\s*:\s*"([^"]+)"',
+            r'name="_token"\s+value="([^"]+)"',
+            r'_token["\s]+value=["\']([^"\']{20,})',
+        ]:
+            m = re.search(pat, html, re.IGNORECASE)
+            if m:
+                return m.group(1)
+        return ""
+
+    # ── Helper: cek apakah sudah login ───────────────────────────────────────
+    @staticmethod
+    def _is_logged_in_url(url: str) -> bool:
+        markers = ["/accounts", "/dashboard", "/home", "/panel"]
+        return any(m in url for m in markers)
+
+    @staticmethod
+    def _is_logged_in_html(html: str) -> bool:
+        markers = [
+            "logout", "Log Out", "Sign Out",
+            "accounts", "control panel", "my account",
+            "create account", "Hosting Accounts",
+        ]
+        html_lower = html.lower()
+        return any(m.lower() in html_lower for m in markers)
 
     # ── Login ─────────────────────────────────────────────────────────────────
     def login(self) -> bool:
+        self._logged_in   = False
+        self._login_error = None
         try:
-            # 1. Ambil CSRF token
+            # 1. GET halaman login untuk ambil CSRF + cookies
             r = self.s.get(self.LOGIN_URL, timeout=TIMEOUT)
-            token = re.search(r'name="_token"\s+value="([^"]+)"', r.text)
-            if not token:
-                token = re.search(r'"_token":"([^"]+)"', r.text)
-            csrf = token.group(1) if token else ""
+            csrf = self._extract_csrf(r.text)
+            logger.debug(f"InfinityFree CSRF: {'found' if csrf else 'not found'}")
 
-            # 2. POST login
-            r = self.s.post(self.LOGIN_URL, data={
-                "_token":   csrf,
-                "email":    CPANEL_USER if "@" in CPANEL_USER else f"{CPANEL_USER}@infinityfree.com",
-                "password": CPANEL_PASS,
-            }, timeout=TIMEOUT, allow_redirects=True)
+            # InfinityFree login pakai EMAIL REGISTRASI akun infinityfree.net
+            # CPANEL_USER harus diisi dengan email tsb (contoh: user@gmail.com).
+            # Jika diisi username hosting (if0_xxxxx), login AKAN gagal.
+            login_email = CPANEL_USER  # gunakan apa adanya; validasi dilakukan setelah POST
 
-            # InfinityFree bisa pakai username langsung
-            if "dashboard" not in r.url and "accounts" not in r.url:
-                # Coba login dengan username as-is
-                r2 = self.s.post(self.LOGIN_URL, data={
-                    "_token":   csrf,
-                    "email":    CPANEL_USER,
-                    "password": CPANEL_PASS,
-                }, timeout=TIMEOUT, allow_redirects=True)
-                r = r2
+            for email_try in [login_email]:
+                self.s.cookies.clear()
+                # GET lagi agar cookies segar
+                r0 = self.s.get(self.LOGIN_URL, timeout=TIMEOUT)
+                csrf = self._extract_csrf(r0.text)
 
-            self._logged_in = "dashboard" in r.url or "accounts" in r.url or \
-                              r.url == self.PANEL_BASE + "/" or \
-                              "infinityfree" in r.url
+                post_headers = {
+                    "Referer":      self.LOGIN_URL,
+                    "Origin":       self.PANEL_BASE,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Sec-Fetch-Site": "same-origin",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-User": "?1",
+                    "Sec-Fetch-Dest": "document",
+                }
 
-            if self._logged_in:
-                self._find_account(r.text)
-            return self._logged_in
+                r = self.s.post(
+                    self.LOGIN_URL,
+                    data={
+                        "_token":   csrf,
+                        "email":    email_try,
+                        "password": CPANEL_PASS,
+                        "remember": "on",
+                    },
+                    headers=post_headers,
+                    timeout=TIMEOUT,
+                    allow_redirects=True,
+                )
+                logger.debug(f"InfinityFree login attempt email={email_try!r} "
+                             f"-> url={r.url} status={r.status_code}")
+
+                if self._is_logged_in_url(r.url) or self._is_logged_in_html(r.text):
+                    self._logged_in = True
+                    self._find_account(r.text)
+                    # Jika account_id belum ditemukan, coba GET /accounts
+                    if not self._account_id:
+                        self._fetch_account_list()
+                    logger.info(f"InfinityFree login OK, account_id={self._account_id}")
+                    return True
+
+                # Cek apakah ada pesan error di HTML
+                err_m = re.search(
+                    r'class="[^"]*alert[^"]*"[^>]*>(.*?)</div>',
+                    r.text, re.DOTALL | re.IGNORECASE,
+                )
+                if err_m:
+                    self._login_error = re.sub(r'<[^>]+>', '', err_m.group(1)).strip()
+                    logger.warning(f"InfinityFree login error msg: {self._login_error}")
+
+            return False
 
         except Exception as e:
-            logger.error(f"InfinityFree login error: {e}")
+            logger.error(f"InfinityFree login exception: {e}")
+            self._login_error = str(e)
             return False
+
+    def _fetch_account_list(self):
+        """Ambil halaman /accounts untuk cari account_id."""
+        try:
+            r = self.s.get(f"{self.PANEL_BASE}/accounts", timeout=TIMEOUT)
+            self._find_account(r.text)
+        except Exception:
+            pass
 
     def _find_account(self, html: str):
         """Cari account ID yang sesuai domain."""
@@ -187,7 +274,8 @@ class _IFSession:
     # ── Email create via VistaPanel ───────────────────────────────────────────
     def create_email(self, username: str, password: str, quota: int = 250) -> dict:
         if not self._logged_in and not self.login():
-            return {"success": False, "error": "Login ke InfinityFree gagal. Periksa email/password akun InfinityFree."}
+            err = self._login_error or "Periksa email/password akun InfinityFree."
+            return {"success": False, "error": f"Login ke InfinityFree gagal. {err}"}
 
         vpanel = self._get_vpanel_url()
         if vpanel:
@@ -401,13 +489,25 @@ def test_connection() -> dict:
         # Untuk InfinityFree, cek DNS dulu karena blokir port 2083
         sess = _get_if_session()
         ok   = sess.login()
+        err  = None
+        if not ok:
+            detail = sess._login_error or ""
+            if "@" not in CPANEL_USER:
+                hint = (
+                    f"CPANEL_USER saat ini bernilai '{CPANEL_USER}' (bukan email). "
+                    "Untuk InfinityFree, isi CPANEL_USER dengan EMAIL yang dipakai "
+                    "saat daftar di infinityfree.net (contoh: user@gmail.com)."
+                )
+            else:
+                hint = detail or "Pastikan email & password akun InfinityFree benar."
+            err = f"Login ke panel InfinityFree gagal. {hint}"
         return {
-            "success":   ok,
-            "backend":   backend,
-            "domain":    CPANEL_DOMAIN,
-            "dns_ready": dns["dns_ready"],
+            "success":     ok,
+            "backend":     backend,
+            "domain":      CPANEL_DOMAIN,
+            "dns_ready":   dns["dns_ready"],
             "dns_details": dns["details"],
-            "error":     None if ok else "Login ke panel InfinityFree gagal.",
+            "error":       err,
         }
     # Standard cPanel test
     try:

@@ -364,10 +364,19 @@ async def cmd_testcpanel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Sementara itu, pakai `/addsmtp` dengan Gmail App Password"
         )
     elif not conn.get("success"):
+        from cpanel_generator import CPANEL_USER as _cu
+        user_hint = ""
+        if "@" not in _cu:
+            user_hint = (
+                f"\n• ⚠️ `CPANEL_USER` = `{_cu}` — ini username hosting, bukan email\\!\n"
+                f"• Ganti `CPANEL_USER` di GitHub Secrets dengan **email** yang kamu\n"
+                f"  pakai daftar di infinityfree\\.net \\(contoh: `user@gmail\\.com`\\)"
+            )
         text += (
             f"⚠️ *DNS sudah ready tapi panel gagal*\n"
             f"• Error: {panel_err}\n"
-            f"• Coba restart bot: trigger ulang workflow di GitHub Actions"
+            f"{user_hint}\n"
+            f"• Setelah ubah secret → restart workflow di GitHub Actions"
         )
     else:
         text += "✅ *Semua siap\\! Coba `/cpanelgen` sekarang\\.*"

@@ -53,12 +53,17 @@ Buka repo GitHub → **Settings** → **Secrets and variables** → **Actions**
 
 Tambahkan 4 secrets berikut:
 
-| Secret Name | Contoh Nilai |
-|-------------|-------------|
-| `CPANEL_URL` | `https://cpanel.epizy.com` |
-| `CPANEL_USER` | `epiz_12345678` |
-| `CPANEL_PASS` | `passwordHostingmu` |
-| `CPANEL_DOMAIN` | `namakamu.epizy.com` |
+| Secret Name | Penjelasan | Contoh Nilai |
+|-------------|-----------|-------------|
+| `CPANEL_URL` | URL panel (untuk InfinityFree: kosongkan atau isi `https://app.infinityfree.com`) | `https://app.infinityfree.com` |
+| `CPANEL_USER` | ⚠️ **EMAIL yang kamu pakai daftar di infinityfree.net** (BUKAN username hosting `if0_xxx`) | `emailkamu@gmail.com` |
+| `CPANEL_PASS` | Password akun InfinityFree (bukan password hosting cPanel) | `passwordInfinityFreeKamu` |
+| `CPANEL_DOMAIN` | Domain/subdomain yang terdaftar di hosting | `namakamu.epizy.com` |
+
+> ⚠️ **Penting untuk InfinityFree:**
+> - `CPANEL_USER` = **email login** ke `app.infinityfree.com` (contoh: `user@gmail.com`)
+> - Bukan username hosting seperti `if0_12345678` atau `epiz_12345678`
+> - `CPANEL_PASS` = password yang sama yang kamu pakai login di situs infinityfree.net
 
 ---
 
