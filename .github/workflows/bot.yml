@@ -29,8 +29,36 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: 📦 Install dependencies
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 📦 Install Python dependencies
         run: pip install -r requirements.txt
+
+      - name: 📦 Install Node dependencies
+        run: npm install
+
+      - name: 🔩 Install and Start Mailpit
+        run: |
+          echo "Installing Mailpit..."
+          curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | bash
+          echo "Starting Mailpit on background..."
+          mailpit > mailpit.log 2>&1 &
+          sleep 2
+
+      - name: 🔗 Start Baileys WA Checker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          PAIRING_PHONE_NUMBER: ${{ secrets.PAIRING_PHONE_NUMBER }}
+          PORT: 3000
+        run: |
+          echo "Starting Baileys WhatsApp Checker..."
+          npm start > wa_checker.log 2>&1 &
+          sleep 5
 
       - name: 🚀 Run Bot
         env:
@@ -39,6 +67,8 @@ jobs:
           GITHUB_RUN_ID:      ${{ github.run_id }}
           GITHUB_REPOSITORY:  ${{ github.repository }}
           GITHUB_SHA:         ${{ github.sha }}
+          # ── WA Checker URL (Local Baileys running on background) ─────────
+          WA_CHECKER_URL:     "http://localhost:3000"
           # ── GitHub PAT untuk auto-update ──────────────────────────────────
           GH_PAT:             ${{ secrets.GH_PAT }}
           # ── Mailtrap API token untuk auto-generate SMTP ──────────────────
