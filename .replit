@@ -1,0 +1,4 @@
+[userenv]
+
+[userenv.shared]
+URL_REPO = "https://github.com/azascloud-cell/SMTP_GEN"
