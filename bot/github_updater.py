@@ -117,9 +117,39 @@ def trigger_update() -> dict:
     return {"success": False, "error": f"HTTP {code}: {str(body)[:200]}"}
 
 
+def get_commit_files(sha: str) -> list[str]:
+    """
+    Ambil daftar file yang berubah di commit tertentu.
+    Return list of file paths.
+    """
+    if not GH_PAT or not REPO:
+        return []
+    url = f"https://api.github.com/repos/{REPO}/commits/{sha}"
+    code, body = _gh_request(url)
+    if code != 200 or not isinstance(body, dict):
+        return []
+    files = body.get("files", [])
+    return [f.get("filename", "") for f in files]
+
+
+# File path patterns yang dianggap "bot code" (bukan data)
+BOT_CODE_PATHS = ("bot/", "requirements.txt", ".github/workflows/bot.yml")
+
+
+def _is_bot_code_change(files: list[str]) -> bool:
+    """True jika ada file bot code yang berubah (bukan hanya data/)."""
+    for f in files:
+        for pattern in BOT_CODE_PATHS:
+            if f.startswith(pattern):
+                return True
+    return False
+
+
 def check_for_update() -> dict:
     """
     Bandingkan commit terbaru di GitHub dengan commit yang sedang jalan.
+    Hanya anggap 'update tersedia' jika ada perubahan file bot code,
+    bukan perubahan data/ saja.
     Return dict: {update_available, latest_sha, current_sha, commit_info?, error?}
     """
     current = get_cached_commit()
@@ -128,11 +158,21 @@ def check_for_update() -> dict:
     if not latest["success"]:
         return {"update_available": False, "error": latest["error"]}
 
-    latest_full = latest["sha_full"]
-    update_avail = bool(current) and not latest_full.startswith(current) and current != latest_full
+    latest_full  = latest["sha_full"]
+    sha_changed  = bool(current) and not latest_full.startswith(current) and current != latest_full
+
+    # Jika SHA berbeda, cek apakah ada file bot code yang berubah
+    has_bot_change = False
+    if sha_changed:
+        changed_files = get_commit_files(latest_full)
+        has_bot_change = _is_bot_code_change(changed_files)
+        if not has_bot_change:
+            # Perubahan hanya di data/ — update cache SHA tapi jangan trigger restart
+            logger.debug(f"Commit {latest['sha']} hanya data — skip trigger update")
+            save_commit(latest_full)
 
     return {
-        "update_available": update_avail,
+        "update_available": sha_changed and has_bot_change,
         "latest_sha":       latest["sha"],
         "latest_sha_full":  latest_full,
         "current_sha":      current[:7] if current else "?",

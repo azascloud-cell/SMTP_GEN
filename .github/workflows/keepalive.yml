@@ -2,8 +2,8 @@ name: ♻️ Keep-Alive Bot
 
 on:
   schedule:
-    # Setiap 1 jam – restart bot lebih sering agar tidak timeout
-    - cron: '0 * * * *'
+    # Setiap 5 jam – restart bot sebelum GitHub Actions timeout 6 jam
+    - cron: '0 */5 * * *'
   workflow_dispatch:           # bisa trigger manual juga
 
 jobs:

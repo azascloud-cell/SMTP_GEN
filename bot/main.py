@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from github_updater import (
     get_latest_commit,
@@ -378,14 +379,38 @@ async def cmd_addmailpit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_delsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    email = " ".join(context.args).strip() if context.args else ""
-    if not email:
-        await update.message.reply_text("Format: `/delsmtp email@domain.com`", parse_mode="Markdown")
+    key = " ".join(context.args).strip() if context.args else ""
+    if not key:
+        # Tampilkan semua akun agar user tahu key yang benar
+        accounts = manager.list_accounts()
+        if not accounts:
+            await update.message.reply_text(
+                "📭 Belum ada akun SMTP.\n\nFormat: `/delsmtp key`",
+                parse_mode="Markdown",
+            )
+            return
+        lines = ["🗑 *Hapus Akun SMTP*\n━━━━━━━━━━━━━━━━━━━━\nKirim key yang ingin dihapus:\n"]
+        for a in accounts:
+            lines.append(f"• `{a['email']}`")
+        lines.append("\nContoh:\n`/delsmtp email@gmail.com`\n`/delsmtp mailtrap:usernamenya`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
-    result = manager.remove_account(email)
-    icon   = "✅" if result["success"] else "❌"
-    msg    = f"{icon} `{email}` {'dihapus.' if result['success'] else result['error']}"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    result = manager.remove_account(key)
+    if result["success"]:
+        await update.message.reply_text(
+            f"✅ `{key}` berhasil dihapus.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📂 Lihat Akun", callback_data="list_smtp"),
+            ]]),
+        )
+    else:
+        # Coba fuzzy match — tampilkan daftar akun yang ada
+        accounts = manager.list_accounts()
+        lines = [f"❌ *Key tidak ditemukan:* `{key}`\n\n📋 *Akun yang tersedia:*"]
+        for a in accounts:
+            lines.append(f"• `{a['email']}`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -796,7 +821,7 @@ async def auto_update_loop(bot: Bot):
     current_sha = os.environ.get("GITHUB_SHA", "")
     if current_sha:
         await asyncio.to_thread(save_commit, current_sha)
-    await asyncio.sleep(90)
+    await asyncio.sleep(300)
 
     while True:
         try:
@@ -830,7 +855,7 @@ async def auto_update_loop(bot: Bot):
         except Exception as e:
             logger.error(f"Auto-update loop error: {e}")
 
-        await asyncio.sleep(600)
+        await asyncio.sleep(1800)
 
 
 # ── Callback Query Handler ─────────────────────────────────────────────────────
@@ -1233,11 +1258,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Startup Notification ───────────────────────────────────────────────────────
+_STARTUP_NOTIF_FILE = Path(__file__).parent / ".last_startup_run_id"
+
+
+def _should_send_startup_notif() -> bool:
+    """Hanya kirim startup notif jika RUN_ID ini berbeda dari terakhir kali."""
+    if RUN_ID == "local":
+        return True  # lokal selalu kirim
+    try:
+        if _STARTUP_NOTIF_FILE.exists():
+            last = _STARTUP_NOTIF_FILE.read_text().strip()
+            if last == RUN_ID:
+                return False  # sudah terkirim untuk run ini
+        _STARTUP_NOTIF_FILE.write_text(RUN_ID)
+        return True
+    except Exception:
+        return True
+
+
 async def send_startup_notification(bot: Bot):
     if not ADMIN_CHAT:
         return
+    if not _should_send_startup_notif():
+        logger.info("Startup notif skip — sudah terkirim untuk run ini.")
+        return
     checker_ok = is_checker_connected()
     ch_info    = f"✅ WA Checker: `{WA_CHECKER_URL}`" if checker_ok else "⚠️ WA Checker belum setup"
+    mt_status  = "✅ MAILTRAP_API_TOKEN tersedia" if MAILTRAP_API_TOKEN else "⚠️ MAILTRAP_API_TOKEN belum diset"
     try:
         await bot.send_message(
             chat_id=ADMIN_CHAT,
@@ -1248,8 +1295,9 @@ async def send_startup_notification(bot: Bot):
                 f"🆔 *Run ID:* `{RUN_ID}`\n"
                 f"📦 *Repo:* `{REPO}`\n"
                 f"📱 {ch_info}\n"
+                f"📬 {mt_status}\n"
                 f"📧 Provider Temp: {len(generator.list_providers())}\n"
-                f"📂 Akun Manual: {manager.count()}\n"
+                f"📂 Akun SMTP: {manager.count()}\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "✅ Bot siap menerima perintah!"
             ),

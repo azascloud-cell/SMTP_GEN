@@ -41,6 +41,8 @@ jobs:
           GITHUB_SHA:         ${{ github.sha }}
           # ── GitHub PAT untuk auto-update ──────────────────────────────────
           GH_PAT:             ${{ secrets.GH_PAT }}
+          # ── Mailtrap API token untuk auto-generate SMTP ──────────────────
+          MAILTRAP_API_TOKEN: ${{ secrets.MAILTRAP_API_TOKEN }}
           # ── cPanel via PHP Proxy API (InfinityFree) ───────────────────────
           CPANEL_API_URL:     ${{ secrets.CPANEL_API_URL }}
           CPANEL_API_KEY:     ${{ secrets.CPANEL_API_KEY }}
