@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 import time
@@ -41,6 +42,7 @@ from number_manager import (
     status_label,
     WA_CHECKER_URL,
 )
+from number_files import save_file, list_files, load_file, delete_file, detect_region
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -62,6 +64,11 @@ manager   = SMTPManager()
 # { chat_id: ["+628...", ...] }
 _user_numbers: dict[int, list[str]] = {}
 
+# ── Simpan nama file terakhir yang digunakan per user ─────────────────────────
+# Dipakai oleh num_reroll agar bisa reload dari GitHub setelah restart
+# { chat_id: "filename.txt" }
+_last_file_by_chat: dict[int, str] = {}
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def now_utc() -> str:
@@ -71,7 +78,7 @@ def now_utc() -> str:
 def main_menu_keyboard():
     rows = []
     # Nomor Management
-    rows.append([InlineKeyboardButton("📱 Cek Nomor WA (Upload .txt)", callback_data="num_info")])
+    rows.append([InlineKeyboardButton("📱 Cek Nomor WA",               callback_data="num_info")])
     checker_label = "🔗 WA Checker: Terhubung ✅" if is_checker_connected() else "🔗 Connect WA Checker"
     rows.append([InlineKeyboardButton(checker_label, callback_data="connect_wa_info")])
     # Email temp
@@ -499,15 +506,27 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     numbers = parse_numbers_from_text(text)
     if not numbers:
         await msg.edit_text(
-            f"❌ *Tidak ada nomor valid di file `{fname}`*\n\n"
-            f"Pastikan format: satu nomor per baris\\.",
-            parse_mode="MarkdownV2",
+            f"❌ Tidak ada nomor valid di file `{fname}`\n\n"
+            f"Pastikan format: satu nomor per baris.",
+            parse_mode="Markdown",
         )
         return
 
-    # Simpan daftar nomor untuk reroll
     chat_id = update.effective_chat.id
     _user_numbers[chat_id] = numbers
+
+    # Simpan file ke GitHub storage (non-blocking, background)
+    safe_fname = fname.replace("_", "\\_")
+    await msg.edit_text(
+        f"💾 Menyimpan *{safe_fname}* \\({len(numbers)} nomor\\)\\.\\.\\.",
+        parse_mode="MarkdownV2",
+    )
+    sanitized_fname = re.sub(r"[^\w\-.]", "_", fname)
+    if not sanitized_fname.lower().endswith(".txt"):
+        sanitized_fname += ".txt"
+    sanitized_fname = sanitized_fname[:80]
+    _last_file_by_chat[chat_id] = sanitized_fname
+    asyncio.create_task(asyncio.to_thread(save_file, fname, text, chat_id, len(numbers)))
 
     # Pilih 3 acak & cek WA
     chosen  = pick_random(numbers, 3)
@@ -867,26 +886,54 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Number Management ─────────────────────────────────────────────────────
     if data == "num_info":
-        await query.edit_message_text(
-            "📱 *Cek Nomor WhatsApp*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Cara pakai:\n"
-            "1️⃣ Kirim file `.txt` ke bot ini\n"
-            "2️⃣ Format: satu nomor per baris\n"
-            "3️⃣ Bot pilih 3 nomor acak\n"
-            "4️⃣ Cek status WA tiap nomor\n\n"
-            "🟢 *Hijau* = Fresh \\(belum terdaftar WA\\)\n"
-            "🔴 *Merah* = Sudah terdaftar WA\n\n"
-            "📄 *Contoh isi file:*\n"
-            "`+6281234567890`\n"
-            "`+6285678901234`\n"
-            "`+6287890123456`\n\n"
-            "⬆️ Upload file .txt sekarang\\!",
-            parse_mode="MarkdownV2",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
-            ]]),
-        )
+        # Tampilkan daftar file tersimpan + opsi upload baru
+        await query.edit_message_text("⏳ Memuat daftar file...")
+        files = await asyncio.to_thread(list_files)
+
+        if not files:
+            await query.edit_message_text(
+                "📱 *Cek Nomor WhatsApp*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Belum ada file tersimpan.\n\n"
+                "⬆️ *Cara pakai:*\n"
+                "1️⃣ Kirim file `.txt` ke bot ini\n"
+                "2️⃣ Format: satu nomor per baris\n"
+                "3️⃣ Bot pilih 3 nomor acak & cek WA\n\n"
+                "🟢 Hijau = Fresh (belum WA)\n"
+                "🔴 Merah = Sudah terdaftar WA",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+        else:
+            rows = []
+            lines = [
+                "📁 *File Manager Nomor WA*",
+                "━━━━━━━━━━━━━━━━━━━━",
+            ]
+            for i, f in enumerate(files[:15], 1):  # max 15 ditampilkan
+                fname   = f.get("filename", "?")
+                name    = f.get("original_name", fname)[:30]
+                total   = f.get("total", "?")
+                region  = f.get("region", "") or detect_region(name)
+                date_s  = f.get("uploaded_at", "")[:10]  # "YYYY-MM-DD"
+                region_tag = f"  {region}" if region else ""
+                lines.append(f"{i}. `{name}`{region_tag}")
+                lines.append(f"   📊 {total} nomor  📅 {date_s}")
+                rows.append([
+                    InlineKeyboardButton("✅ Cek Acak", callback_data=f"numfile_pick_{fname}"),
+                    InlineKeyboardButton("👁 Lihat",    callback_data=f"numfile_view_{fname}"),
+                    InlineKeyboardButton("🗑 Hapus",    callback_data=f"numfile_del_{fname}"),
+                ])
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"Total: {len(files)} file  |  Upload file .txt baru ke chat")
+            rows.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_main")])
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
 
     elif data == "connect_wa_info":
         checker_ok = is_checker_connected()
@@ -895,18 +942,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ *WA Checker Terhubung*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"🌐 URL: `{WA_CHECKER_URL}`\n\n"
-                f"Bot siap mengecek nomor WhatsApp!"
+                f"Bot siap mengecek nomor WhatsApp\\!"
             )
         else:
             status_text = (
                 "🔗 *Connect WA Checker*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
-                "Untuk cek status WA nomor, kamu perlu menyiapkan checker sendiri.\n\n"
+                "Untuk cek status WA nomor, siapkan server checker sendiri\\.\n\n"
                 "*Cara Setup:*\n"
-                "1\\. Siapkan server WA checker \\(contoh: Baileys/WA-JS\\)\n"
+                "1\\. Siapkan server WA checker \\(contoh: Baileys/WA\\-JS\\)\n"
                 "2\\. Expose endpoint: `GET /check?phone=+628xxx`\n"
-                "   Response: `{\"registered\": true/false}`\n"
-                "3\\. Set env var di GitHub Secrets:\n"
+                "   Response JSON: `{\"registered\": true}`\n"
+                "3\\. Tambah GitHub Secret:\n"
                 "   `WA_CHECKER_URL = https://checker-kamu.example.com`\n"
                 "4\\. Restart bot\n\n"
                 "⚠️ Tanpa checker, status nomor tidak bisa diketahui\\.\n"
@@ -922,21 +969,188 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "num_reroll":
         numbers = _user_numbers.get(chat_id, [])
+        loaded_from = None
+
+        # Fallback: jika in-memory kosong (misal setelah restart), reload dari GitHub
+        if not numbers:
+            await query.edit_message_text("⏳ Memuat ulang file nomor dari storage...")
+            # Coba load file yang terakhir digunakan user ini
+            last_fname = _last_file_by_chat.get(chat_id)
+            if last_fname:
+                raw_lines = await asyncio.to_thread(load_file, last_fname)
+                if raw_lines:
+                    numbers = parse_numbers_from_text("\n".join(raw_lines))
+                    if numbers:
+                        _user_numbers[chat_id] = numbers
+                        loaded_from = last_fname
+            # Jika masih kosong, coba file terbaru dari seluruh storage
+            if not numbers:
+                files = await asyncio.to_thread(list_files)
+                if files:
+                    for f in files:  # files sudah diurut terbaru dulu
+                        raw_lines = await asyncio.to_thread(load_file, f["filename"])
+                        if raw_lines:
+                            numbers = parse_numbers_from_text("\n".join(raw_lines))
+                            if numbers:
+                                _user_numbers[chat_id] = numbers
+                                _last_file_by_chat[chat_id] = f["filename"]
+                                loaded_from = f["filename"]
+                                break
+
         if not numbers:
             await query.edit_message_text(
-                "⚠️ Tidak ada daftar nomor tersimpan.\nUpload ulang file .txt kamu.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")
-                ]]),
+                "⚠️ Tidak ada daftar nomor.\n\nUpload file .txt atau pilih dari menu 📱 Cek Nomor WA.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📱 Pilih File", callback_data="num_info")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+                ]),
             )
             return
 
-        await query.edit_message_text("🎲 Mengambil nomor acak baru...")
-        chosen  = pick_random(numbers, 3)
-        results = await asyncio.to_thread(check_numbers, chosen)
+        info_msg = f"🔄 Reload dari `{loaded_from}`..." if loaded_from else "🎲 Mengambil nomor acak baru..."
+        await query.edit_message_text(info_msg, parse_mode="Markdown")
+        chosen   = pick_random(numbers, 3)
+        results  = await asyncio.to_thread(check_numbers, chosen)
         text_out = fmt_number_results(results, len(numbers))
         kb       = build_number_buttons(results, chat_id)
         await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=kb)
+
+    elif data.startswith("numfile_pick_"):
+        filename = data[len("numfile_pick_"):]
+        await query.edit_message_text(f"⏳ Memuat file `{filename}`...", parse_mode="Markdown")
+        raw_lines = await asyncio.to_thread(load_file, filename)
+        if not raw_lines:
+            await query.edit_message_text(
+                f"❌ File `{filename}` tidak ditemukan di storage.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Pilih File Lain", callback_data="num_info")
+                ]]),
+            )
+            return
+        numbers = parse_numbers_from_text("\n".join(raw_lines))
+        if not numbers:
+            await query.edit_message_text(
+                f"❌ Tidak ada nomor valid di file `{filename}`.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Pilih File Lain", callback_data="num_info")
+                ]]),
+            )
+            return
+        _user_numbers[chat_id] = numbers
+        _last_file_by_chat[chat_id] = filename   # ← track file terakhir user
+        chosen   = pick_random(numbers, 3)
+        await query.edit_message_text(f"🔍 Mengecek {len(chosen)} nomor dari {len(numbers)}...")
+        results  = await asyncio.to_thread(check_numbers, chosen)
+        text_out = fmt_number_results(results, len(numbers))
+        kb       = build_number_buttons(results, chat_id)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=kb)
+
+    elif data.startswith("numfile_del_"):
+        filename = data[len("numfile_del_"):]
+        # Minta konfirmasi
+        await query.edit_message_text(
+            f"🗑 *Hapus File?*\n━━━━━━━━━━━━━━━━━━━━\n`{filename}`\n\nYakin ingin menghapus?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Ya, Hapus",    callback_data=f"numfile_confirm_del_{filename}")],
+                [InlineKeyboardButton("❌ Batal",        callback_data="num_info")],
+            ]),
+        )
+
+    elif data.startswith("numfile_confirm_del_"):
+        filename = data[len("numfile_confirm_del_"):]
+        await query.edit_message_text(f"🗑 Menghapus `{filename}`...", parse_mode="Markdown")
+        result = await asyncio.to_thread(delete_file, filename)
+        if result["success"]:
+            # Bersihkan cache in-memory jika user ini memakai file ini
+            if _last_file_by_chat.get(chat_id) == filename:
+                _last_file_by_chat.pop(chat_id, None)
+                _user_numbers.pop(chat_id, None)
+            # Refresh daftar file
+            files = await asyncio.to_thread(list_files)
+            if not files:
+                await query.edit_message_text(
+                    f"✅ File `{filename}` dihapus.\n\nBelum ada file lain tersimpan.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")
+                    ]]),
+                )
+            else:
+                rows = []
+                lines = [
+                    f"✅ File dihapus.",
+                    "",
+                    "📁 *File Manager Nomor WA*",
+                    "━━━━━━━━━━━━━━━━━━━━",
+                ]
+                for i, f in enumerate(files[:15], 1):
+                    fname_  = f.get("filename", "?")
+                    name_   = f.get("original_name", fname_)[:30]
+                    total_  = f.get("total", "?")
+                    region_ = f.get("region", "") or detect_region(name_)
+                    date_s_ = f.get("uploaded_at", "")[:10]
+                    region_tag_ = f"  {region_}" if region_ else ""
+                    lines.append(f"{i}. `{name_}`{region_tag_}")
+                    lines.append(f"   📊 {total_} nomor  📅 {date_s_}")
+                    rows.append([
+                        InlineKeyboardButton("✅ Cek Acak", callback_data=f"numfile_pick_{fname_}"),
+                        InlineKeyboardButton("👁 Lihat",    callback_data=f"numfile_view_{fname_}"),
+                        InlineKeyboardButton("🗑 Hapus",    callback_data=f"numfile_del_{fname_}"),
+                    ])
+                lines.append("━━━━━━━━━━━━━━━━━━━━")
+                lines.append(f"Total: {len(files)} file")
+                rows.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_main")])
+                await query.edit_message_text(
+                    "\n".join(lines),
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(rows),
+                )
+        else:
+            await query.edit_message_text(
+                f"❌ Gagal hapus: {result.get('error', 'Unknown')}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="num_info")
+                ]]),
+            )
+
+    elif data.startswith("numfile_view_"):
+        filename = data[len("numfile_view_"):]
+        await query.edit_message_text(f"⏳ Memuat isi file `{filename}`...", parse_mode="Markdown")
+        raw_lines = await asyncio.to_thread(load_file, filename)
+        if not raw_lines:
+            await query.edit_message_text(
+                f"❌ File `{filename}` tidak ditemukan.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="num_info")
+                ]]),
+            )
+            return
+        all_numbers = parse_numbers_from_text("\n".join(raw_lines))
+        preview     = all_numbers[:25]
+        more        = len(all_numbers) - len(preview)
+        lines = [
+            f"👁 *Isi File:* `{filename}`",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📊 Total: *{len(all_numbers)}* nomor",
+            f"━━━━━━━━━━━━━━━━━━━━",
+        ]
+        for num in preview:
+            lines.append(f"• `{num}`")
+        if more > 0:
+            lines.append(f"_...dan {more} nomor lainnya_")
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Cek Acak dari File Ini", callback_data=f"numfile_pick_{filename}")],
+                [InlineKeyboardButton("🔙 Kembali ke Daftar",     callback_data="num_info")],
+            ]),
+        )
 
     elif data.startswith("copy_num_"):
         phone = data[len("copy_num_"):]
