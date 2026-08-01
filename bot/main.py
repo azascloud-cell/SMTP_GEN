@@ -310,6 +310,71 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_testcpanel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Diagnostik lengkap: DNS + panel + koneksi."""
+    from cpanel_generator import check_dns, test_connection as cpanel_test_conn, CPANEL_DOMAIN, is_configured
+
+    msg = await update.message.reply_text("🔍 Menjalankan diagnostik cPanel...")
+
+    if not is_configured():
+        await msg.edit_text(
+            "⚠️ *cPanel belum dikonfigurasi*\n\nSet secrets: `CPANEL_USER`, `CPANEL_PASS`, `CPANEL_DOMAIN`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 1. DNS check
+    dns = await asyncio.to_thread(check_dns, CPANEL_DOMAIN)
+    d   = dns["details"]
+
+    domain_icon = "✅" if d["domain"]["resolved"] else "❌"
+    mail_icon   = "✅" if d["mail_host"]["resolved"] else "❌"
+    dns_icon    = "✅" if dns["dns_ready"] else "⏳"
+
+    domain_ip = d["domain"]["ip"] or "Belum resolve"
+    mail_ip   = d["mail_host"]["ip"] or "Belum resolve"
+
+    # 2. Panel connection test
+    conn = await asyncio.to_thread(cpanel_test_conn)
+    panel_icon = "✅" if conn.get("success") else "❌"
+    panel_err  = conn.get("error", "OK")
+
+    text = (
+        f"🔍 *Diagnostik cPanel / InfinityFree*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌐 *Domain:* `{CPANEL_DOMAIN}`\n"
+        f"🔧 *Backend:* {conn.get('backend', 'Unknown')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"*📡 Status DNS:*\n"
+        f"{dns_icon} DNS Siap: {'Ya' if dns['dns_ready'] else 'BELUM (masih propagating)'}\n"
+        f"{domain_icon} Domain → `{domain_ip}`\n"
+        f"{mail_icon} Mail host → `{mail_ip}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"*🔌 Koneksi Panel:*\n"
+        f"{panel_icon} Panel login: {'Berhasil' if conn.get('success') else panel_err}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    if not dns["dns_ready"]:
+        text += (
+            f"⏳ *DNS belum siap — apa yang harus dilakukan?*\n"
+            f"• InfinityFree butuh hingga *72 jam* untuk propagasi DNS\n"
+            f"• Ini normal untuk domain baru\n"
+            f"• Coba `/testcpanel` lagi dalam beberapa jam\n"
+            f"• Sementara itu, pakai `/addsmtp` dengan Gmail App Password"
+        )
+    elif not conn.get("success"):
+        text += (
+            f"⚠️ *DNS sudah ready tapi panel gagal*\n"
+            f"• Error: {panel_err}\n"
+            f"• Coba restart bot: trigger ulang workflow di GitHub Actions"
+        )
+    else:
+        text += "✅ *Semua siap\\! Coba `/cpanelgen` sekarang\\.*"
+
+    await msg.edit_text(text, parse_mode="Markdown")
+
+
 async def cmd_cpanel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔧 *Panduan Setup Hosting Gratis \\(InfinityFree\\)*\n"
@@ -554,6 +619,7 @@ def main():
     app.add_handler(CommandHandler("status",      cmd_status))
     app.add_handler(CommandHandler("help",        cmd_help))
     app.add_handler(CommandHandler("cpanelsetup", cmd_cpanel_setup))
+    app.add_handler(CommandHandler("testcpanel",  cmd_testcpanel))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     async def post_init(application: Application):
@@ -566,6 +632,7 @@ def main():
             BotCommand("listsmtp",    "📂 Lihat akun SMTP"),
             BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
             BotCommand("cpanelsetup", "🔧 Panduan setup hosting gratis"),
+            BotCommand("testcpanel",  "🔍 Diagnostik DNS + panel"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),
         ])

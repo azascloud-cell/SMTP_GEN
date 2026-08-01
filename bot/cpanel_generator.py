@@ -366,18 +366,48 @@ def list_emails() -> dict:
         return {"success": False, "error": str(e), "accounts": []}
 
 
+def check_dns(domain: str) -> dict:
+    """Cek apakah domain sudah resolve (DNS sudah propagate)."""
+    import socket
+    checks = {
+        "domain":    domain,
+        "mail_host": f"mail.{domain}",
+        "mx":        f"_smtp._tcp.{domain}",
+    }
+    results = {}
+    for label, host in checks.items():
+        try:
+            ip = socket.gethostbyname(host)
+            results[label] = {"resolved": True, "ip": ip}
+        except socket.gaierror:
+            results[label] = {"resolved": False, "ip": None}
+    dns_ok = results["domain"]["resolved"] or results["mail_host"]["resolved"]
+    return {
+        "dns_ready": dns_ok,
+        "details":   results,
+        "domain":    domain,
+    }
+
+
 def test_connection() -> dict:
     if not is_configured():
         return {"success": False, "error": "Belum dikonfigurasi."}
     backend = "InfinityFree (web scraping)" if _is_infinityfree() else "cPanel UAPI"
+
+    # Selalu cek DNS dulu
+    dns = check_dns(CPANEL_DOMAIN)
+
     if _is_infinityfree():
+        # Untuk InfinityFree, cek DNS dulu karena blokir port 2083
         sess = _get_if_session()
         ok   = sess.login()
         return {
-            "success":  ok,
-            "backend":  backend,
-            "domain":   CPANEL_DOMAIN,
-            "error":    "Login gagal" if not ok else None,
+            "success":   ok,
+            "backend":   backend,
+            "domain":    CPANEL_DOMAIN,
+            "dns_ready": dns["dns_ready"],
+            "dns_details": dns["details"],
+            "error":     None if ok else "Login ke panel InfinityFree gagal.",
         }
     # Standard cPanel test
     try:
@@ -386,6 +416,9 @@ def test_connection() -> dict:
                            auth=(CPANEL_USER, CPANEL_PASS), timeout=TIMEOUT, verify=False)
         d   = r.json()
         return {"success": d.get("status") == 1, "backend": backend,
-                "domain": CPANEL_DOMAIN, "accounts": len(d.get("data", []))}
+                "domain": CPANEL_DOMAIN, "dns_ready": dns["dns_ready"],
+                "dns_details": dns["details"],
+                "accounts": len(d.get("data", []))}
     except Exception as e:
-        return {"success": False, "error": str(e), "backend": backend}
+        return {"success": False, "error": str(e), "backend": backend,
+                "dns_ready": dns["dns_ready"], "dns_details": dns["details"]}
