@@ -1,1 +1,13 @@
-{}
+{
+  "mailpit:0.0.0.0:1025": {
+    "password": "",
+    "username": "",
+    "provider": "Mailpit",
+    "smtp_host": "0.0.0.0",
+    "smtp_port": 1025,
+    "imap_host": "0.0.0.0",
+    "imap_port": 1143,
+    "verified": true,
+    "imap_ok": false
+  }
+}
