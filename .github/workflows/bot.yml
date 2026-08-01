@@ -38,11 +38,14 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_RUN_ID:      ${{ github.run_id }}
           GITHUB_REPOSITORY:  ${{ github.repository }}
-          # ── cPanel (opsional – untuk generate SMTP real) ──────────────────
+          # ── cPanel via PHP Proxy API (InfinityFree) ───────────────────────
+          CPANEL_API_URL:     ${{ secrets.CPANEL_API_URL }}
+          CPANEL_API_KEY:     ${{ secrets.CPANEL_API_KEY }}
+          CPANEL_DOMAIN:      ${{ secrets.CPANEL_DOMAIN }}
+          # ── cPanel UAPI langsung (hosting non-InfinityFree, opsional) ─────
           CPANEL_URL:         ${{ secrets.CPANEL_URL }}
           CPANEL_USER:        ${{ secrets.CPANEL_USER }}
           CPANEL_PASS:        ${{ secrets.CPANEL_PASS }}
-          CPANEL_DOMAIN:      ${{ secrets.CPANEL_DOMAIN }}
         run: |
           echo "✅ Bot starting at $(date -u)"
           cd bot

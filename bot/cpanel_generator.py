@@ -1,23 +1,23 @@
 """
 Email Generator — Multi-backend:
-  1. Standard cPanel UAPI (Niagahoster, DomaiNesia, dll — port 2083)
-  2. InfinityFree / VistaPanel (web scraping karena port 2083 diblokir)
-  3. Fallback: Zoho Mail free tier
+  1. PHP Proxy API (InfinityFree hosting — RECOMMENDED, tidak kena Cloudflare block)
+  2. Standard cPanel UAPI (Niagahoster, DomaiNesia, dll — port 2083)
 
 Env vars:
-  CPANEL_URL    – https://yourpanel.com:2083  (standard cPanel)
-               – https://app.infinityfree.com (InfinityFree)
-  CPANEL_USER   – cPanel username (if0_42550468 untuk InfinityFree)
-  CPANEL_PASS   – cPanel password
-  CPANEL_DOMAIN – domain email (smtpgen.xo.je)
+  CPANEL_API_URL  – https://smtpgen.xo.je/api_email.php  ← PHP proxy di hosting
+  CPANEL_API_KEY  – kunci rahasia yang diset di api_email.php
+  CPANEL_DOMAIN   – domain email (smtpgen.xo.je)
+
+  (opsional — untuk cPanel UAPI langsung, non-InfinityFree)
+  CPANEL_URL      – https://yourpanel.com:2083
+  CPANEL_USER     – cPanel username
+  CPANEL_PASS     – cPanel password
 """
 
 import os
 import re
 import random
 import string
-import socket
-import struct
 import logging
 import requests
 from typing import Optional
@@ -25,137 +25,52 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
 
+# ── PHP Proxy API (cara baru — tidak kena Cloudflare block) ──────────────────
+CPANEL_API_URL = os.environ.get("CPANEL_API_URL", "").rstrip("/")
+CPANEL_API_KEY = os.environ.get("CPANEL_API_KEY", "")
+
+# ── cPanel UAPI langsung (cara lama — untuk hosting non-InfinityFree) ─────────
 CPANEL_URL    = os.environ.get("CPANEL_URL",    "").rstrip("/")
 CPANEL_USER   = os.environ.get("CPANEL_USER",   "")
 CPANEL_PASS   = os.environ.get("CPANEL_PASS",   "")
+
+# ── Shared ────────────────────────────────────────────────────────────────────
 CPANEL_DOMAIN = os.environ.get("CPANEL_DOMAIN", "")
+TIMEOUT       = 20
 
-TIMEOUT = 20
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DNS-over-HTTPS helper
-# GitHub Actions runner kadang tidak bisa resolve domain tertentu via DNS biasa.
-# Solusi: resolve lewat DoH (Google / Cloudflare) dan patch socket.getaddrinfo.
+# Deteksi backend yang aktif
 # ─────────────────────────────────────────────────────────────────────────────
 
-_DOH_CACHE: dict = {}          # { hostname: ip }
-_ORIG_GETADDRINFO = socket.getaddrinfo
+def _use_proxy_api() -> bool:
+    """Gunakan PHP proxy jika CPANEL_API_URL dan CPANEL_API_KEY sudah diset."""
+    return bool(CPANEL_API_URL and CPANEL_API_KEY)
 
 
-def _udp_dns_lookup(hostname: str, nameservers=("8.8.8.8", "1.1.1.1", "9.9.9.9"),
-                    port: int = 53) -> Optional[str]:
-    """Resolve A record via raw UDP DNS query langsung ke public nameserver.
-
-    Tidak butuh library tambahan, tidak butuh DNS system, tidak butuh HTTP.
-    Koneksi UDP ke IP:53 tidak butuh DNS resolution.
-    """
-    # Build DNS query packet
-    txid   = random.randint(0, 65535)
-    header = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0)
-    qname  = b""
-    for label in hostname.encode().split(b"."):
-        qname += bytes([len(label)]) + label
-    qname += b"\x00"
-    packet = header + qname + struct.pack("!HH", 1, 1)  # QTYPE=A, QCLASS=IN
-
-    for ns in nameservers:
-        sock = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(4)
-            sock.sendto(packet, (ns, port))
-            data, _ = sock.recvfrom(512)
-
-            # Parse answer section — skip header (12 bytes) + question
-            offset = 12
-            # Skip QNAME
-            while offset < len(data) and data[offset] != 0:
-                if data[offset] & 0xC0 == 0xC0:
-                    offset += 2; break
-                offset += data[offset] + 1
-            else:
-                offset += 1
-            offset += 4  # QTYPE + QCLASS
-
-            # Parse each answer RR
-            ans_count = struct.unpack("!H", data[6:8])[0]
-            for _ in range(ans_count):
-                if offset >= len(data):
-                    break
-                # Skip NAME (pointer or label)
-                if data[offset] & 0xC0 == 0xC0:
-                    offset += 2
-                else:
-                    while offset < len(data) and data[offset] != 0:
-                        if data[offset] & 0xC0 == 0xC0:
-                            offset += 2; break
-                        offset += data[offset] + 1
-                    else:
-                        offset += 1
-                if offset + 10 > len(data):
-                    break
-                rtype, _, _, rdlen = struct.unpack("!HHIH", data[offset:offset+10])
-                offset += 10
-                if rtype == 1 and rdlen == 4:   # A record
-                    ip = ".".join(str(b) for b in data[offset:offset+4])
-                    logger.info(f"UDP DNS ({ns}) resolved {hostname} → {ip}")
-                    return ip
-                offset += rdlen
-        except Exception as exc:
-            logger.debug(f"UDP DNS {ns} failed: {exc}")
-        finally:
-            if sock:
-                try: sock.close()
-                except Exception: pass
-
-    logger.warning(f"UDP DNS: semua nameserver gagal untuk {hostname}")
-    return None
-
-
-def _patched_getaddrinfo(host, port, *args, **kwargs):
-    """socket.getaddrinfo yang fallback ke UDP DNS langsung jika system DNS gagal."""
-    try:
-        return _ORIG_GETADDRINFO(host, port, *args, **kwargs)
-    except socket.gaierror:
-        # Jangan retry untuk IP address — langsung raise
-        try:
-            socket.inet_aton(host)   # sukses → ini sudah IP, bukan hostname
-            raise
-        except OSError:
-            pass
-        ip = _DOH_CACHE.get(host) or _udp_dns_lookup(host)
-        if ip:
-            _DOH_CACHE[host] = ip
-            logger.info(f"System DNS gagal untuk {host!r}, pakai UDP DNS IP={ip}")
-            return _ORIG_GETADDRINFO(ip, port, *args, **kwargs)
-        raise
-
-
-# Aktifkan patch sekali saat modul di-import
-socket.getaddrinfo = _patched_getaddrinfo
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Deteksi provider
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _is_infinityfree() -> bool:
-    return CPANEL_USER.startswith("if0_") or "infinityfree" in CPANEL_URL.lower() or \
-           "epizy.com" in CPANEL_DOMAIN or "rf.gd" in CPANEL_DOMAIN or \
-           "xo.je" in CPANEL_DOMAIN or "42web.io" in CPANEL_DOMAIN or \
-           "infinityfreeapp.com" in CPANEL_DOMAIN
+def _use_direct_uapi() -> bool:
+    return bool(CPANEL_URL and CPANEL_USER and CPANEL_PASS)
 
 
 def is_configured() -> bool:
-    return all([CPANEL_USER, CPANEL_PASS, CPANEL_DOMAIN])
+    return bool(CPANEL_DOMAIN) and (_use_proxy_api() or _use_direct_uapi())
+
+
+def _backend_label() -> str:
+    if _use_proxy_api():
+        return "PHP Proxy API (InfinityFree)"
+    if _use_direct_uapi():
+        return "cPanel UAPI langsung"
+    return "Belum dikonfigurasi"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helper: Random creds
+# Helper: random creds
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _rnd_user(n=8) -> str:
     c = string.ascii_lowercase
-    return random.choice(c) + "".join(random.choices(c + string.digits, k=n-1))
+    return random.choice(c) + "".join(random.choices(c + string.digits, k=n - 1))
 
 
 def _rnd_pass(n=14) -> str:
@@ -164,348 +79,113 @@ def _rnd_pass(n=14) -> str:
          random.choice(string.ascii_uppercase),
          random.choice(string.digits),
          random.choice("!@#$")]
-    p += random.choices(pool, k=n-4)
+    p += random.choices(pool, k=n - 4)
     random.shuffle(p)
     return "".join(p)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Backend 1: Standard cPanel UAPI
+# Backend 1: PHP Proxy API (UTAMA untuk InfinityFree)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _proxy_call(action: str, params: dict = None) -> dict:
+    """Panggil api_email.php yang ada di hosting InfinityFree."""
+    payload = {"key": CPANEL_API_KEY, "action": action}
+    if params:
+        payload.update(params)
+    try:
+        r = requests.get(CPANEL_API_URL, params=payload, timeout=TIMEOUT, verify=True)
+        if r.status_code == 401:
+            return {"ok": False, "error": "API Key salah. Periksa CPANEL_API_KEY di GitHub Secrets."}
+        if r.status_code == 404:
+            return {"ok": False, "error": f"api_email.php tidak ditemukan di {CPANEL_API_URL}. Pastikan sudah diupload ke public_html."}
+        data = r.json()
+        return data
+    except requests.exceptions.ConnectionError as e:
+        return {"ok": False, "error": f"Tidak bisa reach {CPANEL_API_URL}. Pastikan domain aktif dan file sudah diupload. Detail: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _proxy_create(username: str, password: str, quota: int = 250) -> dict:
+    return _proxy_call("create", {"email": username, "password": password, "quota": quota})
+
+
+def _proxy_list() -> dict:
+    return _proxy_call("list")
+
+
+def _proxy_ping() -> dict:
+    return _proxy_call("ping")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backend 2: cPanel UAPI langsung (untuk hosting berbayar / non-InfinityFree)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _cpanel_uapi_create(username: str, password: str, quota: int = 250) -> dict:
-    """Buat email via cPanel UAPI (hosting berbayar / non-InfinityFree)."""
     url = f"{CPANEL_URL}/execute/Email/add_pop"
     try:
         r = requests.get(url, params={
-            "email":    username,
-            "password": password,
-            "domain":   CPANEL_DOMAIN,
-            "quota":    quota,
+            "email": username, "password": password,
+            "domain": CPANEL_DOMAIN, "quota": quota,
         }, auth=(CPANEL_USER, CPANEL_PASS), timeout=TIMEOUT, verify=False)
-
         data = r.json()
         if data.get("status") == 1:
-            return {"success": True}
+            return {"ok": True}
         errors = data.get("errors") or [data.get("message", "Unknown")]
-        return {"success": False, "error": "; ".join(str(e) for e in errors)}
+        return {"ok": False, "error": "; ".join(str(e) for e in errors)}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"ok": False, "error": str(e)}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Backend 2: InfinityFree / VistaPanel web scraping
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _IFSession:
-    """Session untuk InfinityFree panel (VistaPanel via web scraping)."""
-
-    PANEL_BASE  = "https://app.infinityfree.com"
-    LOGIN_URL   = "https://app.infinityfree.com/login"
-
-    # Header mirip browser nyata
-    _BROWSER_HEADERS = {
-        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/125.0.0.0 Safari/537.36",
-        "Accept":          "text/html,application/xhtml+xml,application/xml;"
-                           "q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection":      "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest":  "document",
-        "Sec-Fetch-Mode":  "navigate",
-        "Sec-Fetch-Site":  "none",
-        "Cache-Control":   "max-age=0",
-    }
-
-    def __init__(self):
-        self.s = requests.Session()
-        self.s.headers.update(self._BROWSER_HEADERS)
-        self._logged_in    = False
-        self._account_id   = None
-        self._vpanel_url   = None
-        self._login_error  = None
-
-    # ── Helper: ekstrak CSRF ──────────────────────────────────────────────────
-    @staticmethod
-    def _extract_csrf(html: str) -> str:
-        for pat in [
-            r'<input[^>]+name=["\']_token["\'][^>]+value=["\']([^"\']+)["\']',
-            r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)["\']',
-            r'"_token"\s*:\s*"([^"]+)"',
-            r'name="_token"\s+value="([^"]+)"',
-            r'_token["\s]+value=["\']([^"\']{20,})',
-        ]:
-            m = re.search(pat, html, re.IGNORECASE)
-            if m:
-                return m.group(1)
-        return ""
-
-    # ── Helper: cek apakah sudah login ───────────────────────────────────────
-    @staticmethod
-    def _is_logged_in_url(url: str) -> bool:
-        markers = ["/accounts", "/dashboard", "/home", "/panel"]
-        return any(m in url for m in markers)
-
-    @staticmethod
-    def _is_logged_in_html(html: str) -> bool:
-        markers = [
-            "logout", "Log Out", "Sign Out",
-            "accounts", "control panel", "my account",
-            "create account", "Hosting Accounts",
-        ]
-        html_lower = html.lower()
-        return any(m.lower() in html_lower for m in markers)
-
-    # ── Login ─────────────────────────────────────────────────────────────────
-    def login(self) -> bool:
-        self._logged_in   = False
-        self._login_error = None
-        try:
-            # 1. GET halaman login untuk ambil CSRF + cookies
-            r = self.s.get(self.LOGIN_URL, timeout=TIMEOUT)
-            csrf = self._extract_csrf(r.text)
-            logger.debug(f"InfinityFree CSRF: {'found' if csrf else 'not found'}")
-
-            # InfinityFree login pakai EMAIL REGISTRASI akun infinityfree.net
-            # CPANEL_USER harus diisi dengan email tsb (contoh: user@gmail.com).
-            # Jika diisi username hosting (if0_xxxxx), login AKAN gagal.
-            login_email = CPANEL_USER  # gunakan apa adanya; validasi dilakukan setelah POST
-
-            for email_try in [login_email]:
-                self.s.cookies.clear()
-                # GET lagi agar cookies segar
-                r0 = self.s.get(self.LOGIN_URL, timeout=TIMEOUT)
-                csrf = self._extract_csrf(r0.text)
-
-                post_headers = {
-                    "Referer":      self.LOGIN_URL,
-                    "Origin":       self.PANEL_BASE,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Sec-Fetch-Site": "same-origin",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-User": "?1",
-                    "Sec-Fetch-Dest": "document",
-                }
-
-                r = self.s.post(
-                    self.LOGIN_URL,
-                    data={
-                        "_token":   csrf,
-                        "email":    email_try,
-                        "password": CPANEL_PASS,
-                        "remember": "on",
-                    },
-                    headers=post_headers,
-                    timeout=TIMEOUT,
-                    allow_redirects=True,
-                )
-                logger.debug(f"InfinityFree login attempt email={email_try!r} "
-                             f"-> url={r.url} status={r.status_code}")
-
-                if self._is_logged_in_url(r.url) or self._is_logged_in_html(r.text):
-                    self._logged_in = True
-                    self._find_account(r.text)
-                    # Jika account_id belum ditemukan, coba GET /accounts
-                    if not self._account_id:
-                        self._fetch_account_list()
-                    logger.info(f"InfinityFree login OK, account_id={self._account_id}")
-                    return True
-
-                # Cek apakah ada pesan error di HTML
-                err_m = re.search(
-                    r'class="[^"]*alert[^"]*"[^>]*>(.*?)</div>',
-                    r.text, re.DOTALL | re.IGNORECASE,
-                )
-                if err_m:
-                    self._login_error = re.sub(r'<[^>]+>', '', err_m.group(1)).strip()
-                    logger.warning(f"InfinityFree login error msg: {self._login_error}")
-
-            return False
-
-        except Exception as e:
-            logger.error(f"InfinityFree login exception: {e}")
-            self._login_error = str(e)
-            return False
-
-    def _fetch_account_list(self):
-        """Ambil halaman /accounts untuk cari account_id."""
-        try:
-            r = self.s.get(f"{self.PANEL_BASE}/accounts", timeout=TIMEOUT)
-            self._find_account(r.text)
-        except Exception:
-            pass
-
-    def _find_account(self, html: str):
-        """Cari account ID yang sesuai domain."""
-        # Cari link ke control panel akun hosting
-        pattern = r'/accounts/(\d+)/cpanel'
-        matches = re.findall(pattern, html)
-        if matches:
-            self._account_id = matches[0]
-
-    def _get_vpanel_url(self) -> Optional[str]:
-        """Ambil URL VistaPanel untuk akun ini."""
-        if not self._account_id:
-            # Coba ambil dari halaman accounts
-            r = self.s.get(f"{self.PANEL_BASE}/accounts", timeout=TIMEOUT)
-            m = re.search(r'/accounts/(\d+)', r.text)
-            if m:
-                self._account_id = m.group(1)
-        if not self._account_id:
-            return None
-
-        # Akses cPanel redirect dari InfinityFree
-        try:
-            r = self.s.get(
-                f"{self.PANEL_BASE}/accounts/{self._account_id}/cpanel",
-                timeout=TIMEOUT, allow_redirects=True,
-            )
-            # URL setelah redirect adalah URL VistaPanel
-            if "cpanel" in r.url or "2082" in r.url or "2083" in r.url:
-                # Ambil base URL
-                from urllib.parse import urlparse
-                p = urlparse(r.url)
-                self._vpanel_url = f"{p.scheme}://{p.netloc}"
-                return self._vpanel_url
-            return r.url
-        except Exception as e:
-            logger.error(f"Get vpanel url error: {e}")
-            return None
-
-    # ── Email create via VistaPanel ───────────────────────────────────────────
-    def create_email(self, username: str, password: str, quota: int = 250) -> dict:
-        if not self._logged_in and not self.login():
-            err = self._login_error or "Periksa email/password akun InfinityFree."
-            return {"success": False, "error": f"Login ke InfinityFree gagal. {err}"}
-
-        vpanel = self._get_vpanel_url()
-        if vpanel:
-            result = self._create_via_vpanel(username, password, quota, vpanel)
-            if result["success"]:
-                return result
-
-        # Fallback: coba langsung via VistaPanel known endpoint
-        result = self._create_via_direct_api(username, password, quota)
-        return result
-
-    def _create_via_vpanel(self, username: str, password: str, quota: int, base_url: str) -> dict:
-        """Create email via VistaPanel web interface."""
-        try:
-            # VistaPanel email add endpoint
-            url = f"{base_url}/frontend/paper_lantern/mail/doaddpop.html"
-            r = self.s.post(url, data={
-                "email":         username,
-                "password":      password,
-                "password2":     password,
-                "quota":         quota,
-                "domain":        CPANEL_DOMAIN,
-                "discard_regex": "",
-            }, timeout=TIMEOUT, verify=False)
-
-            if r.status_code == 200 and ("success" in r.text.lower() or "added" in r.text.lower()):
-                return {"success": True}
-            # Coba UAPI via VistaPanel
-            r2 = self.s.get(
-                f"{base_url}/execute/Email/add_pop",
-                params={"email": username, "password": password, "domain": CPANEL_DOMAIN, "quota": quota},
-                timeout=TIMEOUT, verify=False,
-            )
-            if r2.status_code == 200:
-                d = r2.json()
-                if d.get("status") == 1:
-                    return {"success": True}
-                return {"success": False, "error": str(d.get("errors", "Unknown"))}
-            return {"success": False, "error": f"VistaPanel HTTP {r.status_code}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def _create_via_direct_api(self, username: str, password: str, quota: int) -> dict:
-        """Coba akses cPanel UAPI langsung dari panel InfinityFree."""
-        servers_to_try = [
-            f"https://cpanel.epizy.com",
-            f"https://www.epizy.com:2082",
-            f"https://softaculous.epizy.com:2083",
-        ]
-        for server in servers_to_try:
-            try:
-                r = self.s.get(
-                    f"{server}/execute/Email/add_pop",
-                    params={"email": username, "password": password,
-                            "domain": CPANEL_DOMAIN, "quota": quota},
-                    auth=(CPANEL_USER, CPANEL_PASS),
-                    timeout=8, verify=False,
-                )
-                if r.status_code == 200:
-                    d = r.json()
-                    if d.get("status") == 1:
-                        return {"success": True}
-            except Exception:
-                continue
-        return {"success": False, "error": "Semua endpoint InfinityFree tidak bisa diakses dari luar. Lihat /cpanelsetup untuk solusi alternatif."}
-
-    def list_emails(self) -> dict:
-        if not self._logged_in and not self.login():
-            return {"success": False, "error": "Login gagal.", "accounts": []}
-        vpanel = self._get_vpanel_url()
-        if not vpanel:
-            return {"success": False, "error": "Tidak bisa temukan panel URL.", "accounts": []}
-        try:
-            r = self.s.get(f"{vpanel}/execute/Email/list_pops",
-                           params={"domain": CPANEL_DOMAIN},
-                           timeout=TIMEOUT, verify=False)
-            if r.status_code == 200:
-                d = r.json()
-                if d.get("status") == 1:
-                    return {"success": True, "accounts": d.get("data", []),
-                            "count": len(d.get("data", [])), "domain": CPANEL_DOMAIN}
-        except Exception as e:
-            pass
-        return {"success": False, "error": "Tidak bisa list email.", "accounts": []}
+def _cpanel_uapi_list() -> dict:
+    url = f"{CPANEL_URL}/execute/Email/list_pops"
+    try:
+        r    = requests.get(url, params={"domain": CPANEL_DOMAIN},
+                            auth=(CPANEL_USER, CPANEL_PASS), timeout=TIMEOUT, verify=False)
+        data = r.json()
+        if data.get("status") == 1:
+            accs = [a.get("email", "") for a in data.get("data", [])]
+            return {"ok": True, "accounts": accs, "count": len(accs)}
+        return {"ok": False, "error": "Gagal list email.", "accounts": []}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "accounts": []}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-_if_session: Optional[_IFSession] = None
-
-
-def _get_if_session() -> _IFSession:
-    global _if_session
-    if _if_session is None:
-        _if_session = _IFSession()
-    return _if_session
-
-
 def create_email(username: Optional[str] = None, password: Optional[str] = None,
                  quota: int = 250) -> dict:
     if not is_configured():
-        return {"success": False, "setup_needed": True,
-                "error": "cPanel/hosting belum dikonfigurasi. Set CPANEL_USER, CPANEL_PASS, CPANEL_DOMAIN di GitHub Secrets."}
+        return {
+            "success": False, "setup_needed": True,
+            "error": (
+                "cPanel belum dikonfigurasi. "
+                "Set CPANEL_API_URL + CPANEL_API_KEY + CPANEL_DOMAIN di GitHub Secrets, "
+                "lalu upload hosting/api_email.php ke public_html hosting kamu."
+            ),
+        }
 
     uname = username or _rnd_user()
     pwd   = password or _rnd_pass()
-    email = f"{uname}@{CPANEL_DOMAIN}"
-    mail_host = f"mail.{CPANEL_DOMAIN}"
 
-    # Pilih backend
-    if _is_infinityfree():
-        logger.info("Using InfinityFree backend (web scraping)")
-        sess   = _get_if_session()
-        result = sess.create_email(uname, pwd, quota)
+    if _use_proxy_api():
+        res = _proxy_create(uname, pwd, quota)
+        ok  = res.get("ok", False)
     else:
-        logger.info("Using standard cPanel UAPI backend")
-        result = _cpanel_uapi_create(uname, pwd, quota)
+        res = _cpanel_uapi_create(uname, pwd, quota)
+        ok  = res.get("ok", False)
 
-    if not result["success"]:
-        return result
+    if not ok:
+        return {"success": False, "error": res.get("error", "Unknown error")}
 
+    mail_host = f"mail.{CPANEL_DOMAIN}"
     return {
         "success":       True,
-        "email":         email,
+        "email":         f"{uname}@{CPANEL_DOMAIN}",
         "password":      pwd,
         "username":      uname,
         "domain":        CPANEL_DOMAIN,
@@ -520,22 +200,22 @@ def create_email(username: Optional[str] = None, password: Optional[str] = None,
         "webmail":       f"https://{CPANEL_DOMAIN}/webmail",
         "expires":       "Permanen (selama hosting aktif)",
         "note":          "Akun email real — bisa kirim & terima via SMTP",
-        "provider":      "InfinityFree" if _is_infinityfree() else "cPanel Hosting",
+        "provider":      _backend_label(),
     }
 
 
 def delete_email(username: str) -> dict:
     if not is_configured():
         return {"success": False, "error": "Belum dikonfigurasi."}
-    if _is_infinityfree():
-        return {"success": False, "error": "Hapus email manual di panel InfinityFree."}
+    if _use_proxy_api():
+        res = _proxy_call("delete", {"email": username})
+        return {"success": res.get("ok", False), "error": res.get("error", "")}
     try:
         url = f"{CPANEL_URL}/execute/Email/delete_pop"
         r   = requests.get(url, params={"email": username, "domain": CPANEL_DOMAIN},
                            auth=(CPANEL_USER, CPANEL_PASS), timeout=TIMEOUT, verify=False)
         d   = r.json()
-        return {"success": d.get("status") == 1,
-                "error": str(d.get("errors", ""))}
+        return {"success": d.get("status") == 1, "error": str(d.get("errors", ""))}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -543,68 +223,49 @@ def delete_email(username: str) -> dict:
 def list_emails() -> dict:
     if not is_configured():
         return {"success": False, "error": "Belum dikonfigurasi.", "accounts": []}
-    if _is_infinityfree():
-        return _get_if_session().list_emails()
-    try:
-        url = f"{CPANEL_URL}/execute/Email/list_pops"
-        r   = requests.get(url, params={"domain": CPANEL_DOMAIN},
-                           auth=(CPANEL_USER, CPANEL_PASS), timeout=TIMEOUT, verify=False)
-        d   = r.json()
-        if d.get("status") == 1:
-            return {"success": True, "accounts": d.get("data", []),
-                    "count": len(d.get("data", [])), "domain": CPANEL_DOMAIN}
-        return {"success": False, "error": "Gagal list email", "accounts": []}
-    except Exception as e:
-        return {"success": False, "error": str(e), "accounts": []}
+    if _use_proxy_api():
+        res  = _proxy_list()
+        accs = res.get("accounts", [])
+        return {"success": res.get("ok", False), "accounts": accs,
+                "count": len(accs), "domain": CPANEL_DOMAIN,
+                "error": res.get("error", "")}
+    res = _cpanel_uapi_list()
+    return {"success": res.get("ok", False), "accounts": res.get("accounts", []),
+            "count": len(res.get("accounts", [])), "domain": CPANEL_DOMAIN,
+            "error": res.get("error", "")}
 
 
 def check_dns(domain: str) -> dict:
-    """Cek apakah domain sudah resolve (DNS sudah propagate)."""
-    import socket
-    checks = {
-        "domain":    domain,
-        "mail_host": f"mail.{domain}",
-        "mx":        f"_smtp._tcp.{domain}",
-    }
+    import socket as _socket
+    checks = {"domain": domain, "mail_host": f"mail.{domain}"}
     results = {}
     for label, host in checks.items():
         try:
-            ip = socket.gethostbyname(host)
+            ip = _socket.gethostbyname(host)
             results[label] = {"resolved": True, "ip": ip}
-        except socket.gaierror:
+        except _socket.gaierror:
             results[label] = {"resolved": False, "ip": None}
     dns_ok = results["domain"]["resolved"] or results["mail_host"]["resolved"]
-    return {
-        "dns_ready": dns_ok,
-        "details":   results,
-        "domain":    domain,
-    }
+    return {"dns_ready": dns_ok, "details": results, "domain": domain}
 
 
 def test_connection() -> dict:
     if not is_configured():
         return {"success": False, "error": "Belum dikonfigurasi."}
-    backend = "InfinityFree (web scraping)" if _is_infinityfree() else "cPanel UAPI"
 
-    # Selalu cek DNS dulu
-    dns = check_dns(CPANEL_DOMAIN)
+    dns     = check_dns(CPANEL_DOMAIN)
+    backend = _backend_label()
 
-    if _is_infinityfree():
-        # Untuk InfinityFree, cek DNS dulu karena blokir port 2083
-        sess = _get_if_session()
-        ok   = sess.login()
-        err  = None
-        if not ok:
-            detail = sess._login_error or ""
-            if "@" not in CPANEL_USER:
-                hint = (
-                    f"CPANEL_USER saat ini bernilai '{CPANEL_USER}' (bukan email). "
-                    "Untuk InfinityFree, isi CPANEL_USER dengan EMAIL yang dipakai "
-                    "saat daftar di infinityfree.net (contoh: user@gmail.com)."
-                )
-            else:
-                hint = detail or "Pastikan email & password akun InfinityFree benar."
-            err = f"Login ke panel InfinityFree gagal. {hint}"
+    if _use_proxy_api():
+        res = _proxy_ping()
+        ok  = res.get("ok", False)
+        err = None if ok else res.get("error", "Ping ke PHP API gagal.")
+        if not ok and not err:
+            err = (
+                f"api_email.php tidak bisa diakses di {CPANEL_API_URL}. "
+                "Pastikan file sudah diupload ke public_html dan domain aktif. "
+                "Lihat hosting/DEPLOY.md untuk panduan lengkap."
+            )
         return {
             "success":     ok,
             "backend":     backend,
@@ -612,8 +273,10 @@ def test_connection() -> dict:
             "dns_ready":   dns["dns_ready"],
             "dns_details": dns["details"],
             "error":       err,
+            "api_url":     CPANEL_API_URL,
         }
-    # Standard cPanel test
+
+    # Standard cPanel UAPI test
     try:
         url = f"{CPANEL_URL}/execute/Email/list_pops"
         r   = requests.get(url, params={"domain": CPANEL_DOMAIN},
