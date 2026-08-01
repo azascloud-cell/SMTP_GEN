@@ -3,6 +3,13 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
+from github_updater import (
+    get_latest_commit,
+    get_cached_commit,
+    save_commit,
+    trigger_update,
+    check_for_update,
+)
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
@@ -64,6 +71,7 @@ def main_menu_keyboard():
     if not cpanel_ok:
         rows.append([InlineKeyboardButton("🔧 Setup cPanel (Generate Real)", callback_data="cpanel_setup")])
     rows.append([InlineKeyboardButton("🔧 WhatsApp Fix (/fix +nomor)", callback_data="fix_info")])
+    rows.append([InlineKeyboardButton("🔄 Cek & Update Bot",          callback_data="check_update")])
     rows.append([InlineKeyboardButton("❓ Cara Pakai",  callback_data="howto"),
                  InlineKeyboardButton("📊 Status Bot", callback_data="status")])
     return InlineKeyboardMarkup(rows)
@@ -477,6 +485,118 @@ async def imap_monitor_loop(bot: Bot):
         await asyncio.sleep(300)  # Cek tiap 5 menit
 
 
+# ── GitHub Auto-Update ────────────────────────────────────────────────────────
+async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cek & trigger update dari GitHub repo terbaru."""
+    msg = await update.message.reply_text("🔍 Memeriksa update dari GitHub...")
+
+    result = await asyncio.to_thread(check_for_update)
+
+    if "error" in result and not result.get("update_available"):
+        await msg.edit_text(
+            f"❌ *Gagal cek update*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ {result['error']}\n\n"
+            f"💡 Pastikan secret `GH_PAT` sudah diset di GitHub Actions.",
+            parse_mode="Markdown",
+        )
+        return
+
+    current = result.get("current_sha", "?")
+    latest  = result.get("latest_sha", "?")
+    info    = result.get("commit_info", {})
+
+    if not result.get("update_available"):
+        await msg.edit_text(
+            f"✅ *Bot sudah versi terbaru!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 Commit: `{latest}`\n"
+            f"📝 {info.get('message', '-')}\n"
+            f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n"
+            f"⏰ {now_utc()}",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Ada update — trigger workflow
+    await msg.edit_text(
+        f"🔄 *Update ditemukan! Trigger restart...*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Saat ini : `{current}`\n"
+        f"🆕 Terbaru  : `{latest}`\n"
+        f"📝 {info.get('message', '-')}\n"
+        f"👤 {info.get('author', '-')} · {info.get('date', '-')}",
+        parse_mode="Markdown",
+    )
+
+    trig = await asyncio.to_thread(trigger_update)
+    if trig["success"]:
+        await msg.edit_text(
+            f"🚀 *Update berhasil di-trigger!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 Dari : `{current}` → `{latest}`\n"
+            f"📝 {info.get('message', '-')}\n\n"
+            f"⏳ Bot akan restart dalam ~30 detik dengan kode terbaru.",
+            parse_mode="Markdown",
+        )
+    else:
+        await msg.edit_text(
+            f"❌ *Gagal trigger update*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ {trig.get('error', 'Unknown')}\n\n"
+            f"💡 Cek secret `GH_PAT` punya scope `workflow`.",
+            parse_mode="Markdown",
+        )
+
+
+async def auto_update_loop(bot: Bot):
+    """Background loop: cek GitHub update tiap 30 menit, restart otomatis."""
+    logger.info("Auto-update loop dimulai...")
+    # Simpan commit saat ini
+    current_sha = os.environ.get("GITHUB_SHA", "")
+    if current_sha:
+        await asyncio.to_thread(save_commit, current_sha)
+
+    # Tunda 5 menit sebelum cek pertama (biarkan bot fully up dulu)
+    await asyncio.sleep(300)
+
+    while True:
+        try:
+            result = await asyncio.to_thread(check_for_update)
+
+            if result.get("update_available"):
+                latest = result.get("latest_sha", "?")
+                current = result.get("current_sha", "?")
+                info   = result.get("commit_info", {})
+                logger.info(f"Update tersedia: {current} → {latest}")
+
+                trig = await asyncio.to_thread(trigger_update)
+
+                if trig["success"] and ADMIN_CHAT:
+                    try:
+                        await bot.send_message(
+                            chat_id=ADMIN_CHAT,
+                            text=(
+                                f"🔄 *Auto-Update Terdeteksi!*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📦 Dari : `{current}` → `{latest}`\n"
+                                f"📝 {info.get('message', '-')}\n"
+                                f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n\n"
+                                f"🚀 Bot restart otomatis dalam ~30 detik."
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:
+                        logger.error(f"Gagal notif auto-update: {e}")
+                elif not trig["success"]:
+                    logger.warning(f"Auto-update trigger gagal: {trig.get('error')}")
+
+        except Exception as e:
+            logger.error(f"Auto-update loop error: {e}")
+
+        await asyncio.sleep(1800)  # Cek tiap 30 menit
+
+
 async def cmd_testcpanel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Diagnostik lengkap: DNS + panel + koneksi."""
     from cpanel_generator import check_dns, test_connection as cpanel_test_conn, CPANEL_DOMAIN, is_configured
@@ -742,6 +862,67 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]]),
         )
 
+    elif data == "check_update":
+        await query.edit_message_text("🔍 Memeriksa update dari GitHub...")
+        result = await asyncio.to_thread(check_for_update)
+
+        if "error" in result and not result.get("update_available"):
+            await query.edit_message_text(
+                f"❌ *Gagal cek update*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ {result['error']}\n\n"
+                f"💡 Pastikan secret `GH_PAT` sudah diset di GitHub Actions.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+            return
+
+        current = result.get("current_sha", "?")
+        latest  = result.get("latest_sha", "?")
+        info    = result.get("commit_info", {})
+
+        if not result.get("update_available"):
+            await query.edit_message_text(
+                f"✅ *Bot sudah versi terbaru!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 Commit: `{latest}`\n"
+                f"📝 {info.get('message', '-')}\n"
+                f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n"
+                f"⏰ {now_utc()}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+            return
+
+        # Ada update
+        trig = await asyncio.to_thread(trigger_update)
+        if trig["success"]:
+            await query.edit_message_text(
+                f"🚀 *Update berhasil di-trigger!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 Dari : `{current}` → `{latest}`\n"
+                f"📝 {info.get('message', '-')}\n"
+                f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n\n"
+                f"⏳ Bot restart dalam ~30 detik dengan kode terbaru.",
+                parse_mode="Markdown",
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ *Gagal trigger update*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 Ada update: `{current}` → `{latest}`\n"
+                f"⚠️ {trig.get('error', 'Unknown')}\n\n"
+                f"💡 Cek secret `GH_PAT` punya scope `workflow`.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+
     elif data == "fix_info":
         await query.edit_message_text(
             "🔧 *WhatsApp Fix — Banding Ban*\n"
@@ -816,6 +997,7 @@ def main():
     app.add_handler(CommandHandler("cpanelsetup", cmd_cpanel_setup))
     app.add_handler(CommandHandler("testcpanel",  cmd_testcpanel))
     app.add_handler(CommandHandler("fix",         cmd_fix))
+    app.add_handler(CommandHandler("update",      cmd_update))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     async def post_init(application: Application):
@@ -828,13 +1010,15 @@ def main():
             BotCommand("listsmtp",    "📂 Lihat akun SMTP"),
             BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
             BotCommand("fix",         "🔧 Banding ban WhatsApp"),
+            BotCommand("update",      "🔄 Cek & update bot dari GitHub"),
             BotCommand("cpanelsetup", "🔧 Panduan setup hosting gratis"),
             BotCommand("testcpanel",  "🔍 Diagnostik DNS + panel"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),
         ])
-        # Mulai background IMAP monitor
+        # Mulai background loops
         asyncio.create_task(imap_monitor_loop(application.bot))
+        asyncio.create_task(auto_update_loop(application.bot))
 
     app.post_init = post_init
     logger.info("Bot mulai polling...")

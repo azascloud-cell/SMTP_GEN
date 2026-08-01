@@ -38,6 +38,9 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_RUN_ID:      ${{ github.run_id }}
           GITHUB_REPOSITORY:  ${{ github.repository }}
+          GITHUB_SHA:         ${{ github.sha }}
+          # ── GitHub PAT untuk auto-update ──────────────────────────────────
+          GH_PAT:             ${{ secrets.GH_PAT }}
           # ── cPanel via PHP Proxy API (InfinityFree) ───────────────────────
           CPANEL_API_URL:     ${{ secrets.CPANEL_API_URL }}
           CPANEL_API_KEY:     ${{ secrets.CPANEL_API_KEY }}
@@ -48,6 +51,7 @@ jobs:
           CPANEL_PASS:        ${{ secrets.CPANEL_PASS }}
         run: |
           echo "✅ Bot starting at $(date -u)"
+          echo "📦 Commit: ${{ github.sha }}"
           cd bot
           python main.py
 
