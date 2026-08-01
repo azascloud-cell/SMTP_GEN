@@ -16,6 +16,7 @@ import os
 import re
 import random
 import string
+import socket
 import logging
 import requests
 from typing import Optional
@@ -29,6 +30,56 @@ CPANEL_PASS   = os.environ.get("CPANEL_PASS",   "")
 CPANEL_DOMAIN = os.environ.get("CPANEL_DOMAIN", "")
 
 TIMEOUT = 20
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DNS-over-HTTPS helper
+# GitHub Actions runner kadang tidak bisa resolve domain tertentu via DNS biasa.
+# Solusi: resolve lewat DoH (Google / Cloudflare) dan patch socket.getaddrinfo.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DOH_CACHE: dict = {}          # { hostname: ip }
+_ORIG_GETADDRINFO = socket.getaddrinfo
+
+
+def _resolve_via_doh(hostname: str) -> Optional[str]:
+    """Resolve hostname lewat DNS-over-HTTPS agar tidak bergantung DNS runner."""
+    if hostname in _DOH_CACHE:
+        return _DOH_CACHE[hostname]
+    endpoints = [
+        f"https://dns.google/resolve?name={hostname}&type=A",
+        f"https://cloudflare-dns.com/dns-query?name={hostname}&type=A",
+        f"https://1.1.1.1/dns-query?name={hostname}&type=A",
+    ]
+    doh_headers = {"Accept": "application/dns-json"}
+    for url in endpoints:
+        try:
+            r = requests.get(url, headers=doh_headers, timeout=8, verify=True)
+            data = r.json()
+            for ans in data.get("Answer", []):
+                if ans.get("type") == 1:   # A record
+                    ip = ans["data"]
+                    _DOH_CACHE[hostname] = ip
+                    logger.debug(f"DoH resolved {hostname} → {ip}")
+                    return ip
+        except Exception as exc:
+            logger.debug(f"DoH endpoint {url} failed: {exc}")
+    return None
+
+
+def _patched_getaddrinfo(host, port, *args, **kwargs):
+    """socket.getaddrinfo yang fallback ke DoH jika DNS biasa gagal."""
+    try:
+        return _ORIG_GETADDRINFO(host, port, *args, **kwargs)
+    except socket.gaierror:
+        ip = _resolve_via_doh(host)
+        if ip:
+            logger.info(f"DNS biasa gagal untuk {host!r}, pakai DoH IP={ip}")
+            return _ORIG_GETADDRINFO(ip, port, *args, **kwargs)
+        raise   # biarkan error asli naik
+
+
+# Aktifkan patch sekali saat modul di-import
+socket.getaddrinfo = _patched_getaddrinfo
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Deteksi provider
