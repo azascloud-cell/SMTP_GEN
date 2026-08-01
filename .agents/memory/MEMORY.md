@@ -1,0 +1,1 @@
+- [InfinityFree cPanel limitations](infinityfree-cpanel.md) — port 2083 diblokir dari luar; harus pakai web scraping via app.infinityfree.com
