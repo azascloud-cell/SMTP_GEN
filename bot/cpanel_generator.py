@@ -42,27 +42,41 @@ _ORIG_GETADDRINFO = socket.getaddrinfo
 
 
 def _resolve_via_doh(hostname: str) -> Optional[str]:
-    """Resolve hostname lewat DNS-over-HTTPS agar tidak bergantung DNS runner."""
+    """Resolve hostname lewat DNS-over-HTTPS.
+
+    Pakai IP address langsung untuk DoH agar tidak perlu DNS sama sekali
+    (GitHub Actions runner kadang tidak bisa resolve domain tertentu).
+    """
     if hostname in _DOH_CACHE:
         return _DOH_CACHE[hostname]
+
+    # Gunakan IP langsung — tidak butuh DNS untuk reach endpoint DoH ini
     endpoints = [
-        f"https://dns.google/resolve?name={hostname}&type=A",
-        f"https://cloudflare-dns.com/dns-query?name={hostname}&type=A",
+        # Cloudflare 1.1.1.1 — JSON API, IP langsung, cert valid untuk 1.1.1.1
         f"https://1.1.1.1/dns-query?name={hostname}&type=A",
+        # Google 8.8.8.8 — cert punya SAN untuk 8.8.8.8
+        f"https://8.8.8.8/resolve?name={hostname}&type=A",
+        # Quad9 9.9.9.9
+        f"https://9.9.9.9:5053/dns-query?name={hostname}&type=A",
+        # Cloudflare alt IP
+        f"https://1.0.0.1/dns-query?name={hostname}&type=A",
     ]
     doh_headers = {"Accept": "application/dns-json"}
     for url in endpoints:
         try:
-            r = requests.get(url, headers=doh_headers, timeout=8, verify=True)
+            r = requests.get(url, headers=doh_headers, timeout=8, verify=False)
+            if r.status_code != 200:
+                continue
             data = r.json()
             for ans in data.get("Answer", []):
                 if ans.get("type") == 1:   # A record
                     ip = ans["data"]
                     _DOH_CACHE[hostname] = ip
-                    logger.debug(f"DoH resolved {hostname} → {ip}")
+                    logger.info(f"DoH ({url.split('/')[2]}) resolved {hostname} → {ip}")
                     return ip
         except Exception as exc:
             logger.debug(f"DoH endpoint {url} failed: {exc}")
+    logger.warning(f"DoH: semua endpoint gagal untuk {hostname}")
     return None
 
 
