@@ -701,10 +701,10 @@ async def imap_monitor_loop(bot: Bot):
                     except Exception as e:
                         logger.error(f"Gagal kirim notif ke {chat_id}: {e}")
 
-                elif check_count > 0 and check_count % 6 == 0:
-                    # Setiap 6 check (~30 menit), kirim status update ke user
+                elif check_count > 0 and check_count % 20 == 0:
+                    # Setiap 20 check (~30 menit @ 90 detik/check), kirim status update ke user
                     try:
-                        elapsed_min = (check_count * 5)
+                        elapsed_min = round(check_count * 1.5)
                         await bot.send_message(
                             chat_id=chat_id,
                             text=(
@@ -727,7 +727,7 @@ async def imap_monitor_loop(bot: Bot):
         except Exception as e:
             logger.error(f"IMAP monitor error: {e}")
 
-        await asyncio.sleep(300)
+        await asyncio.sleep(90)
 
 
 # ── GitHub Auto-Update ────────────────────────────────────────────────────────
@@ -796,7 +796,7 @@ async def auto_update_loop(bot: Bot):
     current_sha = os.environ.get("GITHUB_SHA", "")
     if current_sha:
         await asyncio.to_thread(save_commit, current_sha)
-    await asyncio.sleep(300)
+    await asyncio.sleep(90)
 
     while True:
         try:
@@ -830,7 +830,7 @@ async def auto_update_loop(bot: Bot):
         except Exception as e:
             logger.error(f"Auto-update loop error: {e}")
 
-        await asyncio.sleep(1800)
+        await asyncio.sleep(600)
 
 
 # ── Callback Query Handler ─────────────────────────────────────────────────────
