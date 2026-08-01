@@ -334,5 +334,45 @@ class SMTPManager:
             acc["email"] = email
         return acc
 
+    def add_auto_generated(self, gen_result: dict) -> dict:
+        """
+        Simpan akun SMTP hasil auto-generate (dari smtp_auto_generator).
+        Tidak perlu verifikasi ulang — credentials sudah valid dari provider.
+        """
+        if not gen_result.get("success"):
+            return {"success": False, "error": gen_result.get("error", "Generate gagal.")}
+
+        key      = gen_result.get("key", gen_result.get("username", ""))
+        if not key:
+            return {"success": False, "error": "Key/username tidak ada di hasil generate."}
+
+        data = _load()
+        data[key] = {
+            "password":  gen_result.get("password", ""),
+            "username":  gen_result.get("username", key),
+            "provider":  gen_result.get("provider", "Auto"),
+            "smtp_host": gen_result.get("smtp_host", ""),
+            "smtp_port": int(gen_result.get("smtp_port", 587)),
+            "imap_host": gen_result.get("imap_host", ""),
+            "imap_port": int(gen_result.get("imap_port", 993)),
+            "verified":  True,
+            "imap_ok":   True,
+            "auto_gen":  True,
+            "note":      gen_result.get("note", ""),
+        }
+        _save(data)
+
+        return {
+            "success":   True,
+            "email":     key,
+            "smtp_ok":   True,
+            "imap_ok":   True,
+            "smtp_host": gen_result.get("smtp_host", ""),
+            "smtp_port": int(gen_result.get("smtp_port", 587)),
+            "imap_host": gen_result.get("imap_host", ""),
+            "imap_port": int(gen_result.get("imap_port", 993)),
+            "note":      gen_result.get("note", ""),
+        }
+
     def count(self) -> int:
         return len(_load())

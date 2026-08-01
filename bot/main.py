@@ -21,6 +21,7 @@ from telegram.ext import (
 )
 from smtp_generator import SMTPGenerator
 from smtp_manager import SMTPManager
+from smtp_auto_generator import auto_gen_smtp, MAILTRAP_API_TOKEN
 from whatsapp_fix import (
     send_appeal_email,
     check_whatsapp_reply,
@@ -28,6 +29,7 @@ from whatsapp_fix import (
     remove_pending,
     get_all_pending,
     mark_notified,
+    increment_check,
 )
 from number_manager import (
     parse_numbers_from_text,
@@ -74,9 +76,10 @@ def main_menu_keyboard():
     # Email temp
     rows.append([InlineKeyboardButton("📧 Email Temp (Receive Only)",      callback_data="gen")])
     rows.append([InlineKeyboardButton("📋 Pilih Provider Email Temp",      callback_data="menu_provider")])
-    # SMTP Manual
+    # SMTP Auto & Manual
+    rows.append([InlineKeyboardButton("🤖 Auto Generate SMTP",             callback_data="autogen_smtp")])
     rows.append([InlineKeyboardButton("➕ Tambah SMTP Manual",              callback_data="add_smtp_info")])
-    rows.append([InlineKeyboardButton("📂 Akun SMTP Manual",               callback_data="list_smtp")])
+    rows.append([InlineKeyboardButton("📂 Akun SMTP",                      callback_data="list_smtp")])
     # Mailtrap & Mailpit
     rows.append([
         InlineKeyboardButton("📬 Mailtrap SMTP", callback_data="mailtrap_info"),
@@ -494,6 +497,56 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── WhatsApp Fix Command ───────────────────────────────────────────────────────
+async def cmd_autogen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Auto-generate SMTP via backend (Mail.tm atau Mailtrap)."""
+    arg = " ".join(context.args).strip().lower() if context.args else "auto"
+    msg = await update.message.reply_text(
+        f"⏳ *Auto-generate SMTP...*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Provider: `{arg}`\n"
+        f"Mohon tunggu...",
+        parse_mode="Markdown",
+    )
+    result = await asyncio.to_thread(auto_gen_smtp, arg)
+    if not result["success"]:
+        await msg.edit_text(
+            f"❌ *Generate SMTP Gagal*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ {result.get('error', 'Unknown error')}\n\n"
+            f"💡 Coba provider lain: /autogen mailtm",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Menu", callback_data="back_main")
+            ]]),
+        )
+        return
+    save_result = await asyncio.to_thread(manager.add_auto_generated, result)
+    if not save_result["success"]:
+        await msg.edit_text(
+            f"❌ *Gagal simpan akun SMTP*\n{save_result.get('error', '')}",
+            parse_mode="Markdown",
+        )
+        return
+    key = save_result.get("email", result.get("key", "-"))
+    await msg.edit_text(
+        f"✅ *SMTP Auto-Generate Berhasil!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔖 Provider : `{result.get('provider', '-')}`\n"
+        f"👤 Key/User : `{key}`\n"
+        f"🔑 Password : `{result.get('password', '-')}`\n"
+        f"📤 SMTP     : `{result.get('smtp_host')}:{result.get('smtp_port')}`\n"
+        f"📥 IMAP     : `{result.get('imap_host')}:{result.get('imap_port')}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 {result.get('note', '')}\n\n"
+        f"💾 Tersimpan otomatis & siap digunakan!",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📂 Lihat Akun SMTP", callback_data="list_smtp")],
+            [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
+        ]),
+    )
+
+
 async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = " ".join(context.args).strip() if context.args else ""
 
@@ -590,47 +643,86 @@ async def imap_monitor_loop(bot: Bot):
                 if not smtp_full:
                     continue
 
+                check_count = item.get("check_count", 0)
+                increment_check(key)
+
                 reply = await asyncio.to_thread(
                     check_whatsapp_reply, smtp_full, item["sent_at"]
                 )
 
+                chat_id = item["chat_id"]
+                phone   = item["phone"]
+                smtp_em = item["smtp_email"]
+
                 if reply:
-                    chat_id     = item["chat_id"]
-                    phone       = item["phone"]
-                    smtp_em     = item["smtp_email"]
                     body_preview = reply.get("body", "")[:400]
+                    confirmed    = reply.get("confirmed", True)
+
+                    if confirmed:
+                        header = "📬 *EMAIL DIBALAS OLEH WHATSAPP!*"
+                        info   = (
+                            "👋 Kabar gembira! Email banding kamu sudah dibalas oleh WhatsApp Support.\n\n"
+                            "Kemungkinan besar nomor kamu sudah berhasil diaktifkan kembali.\n"
+                            "Coba buka WhatsApp dan cek nomornya ya.\n"
+                            "Kalau masih ada kendala, coba banding ulang dengan /fix."
+                        )
+                    else:
+                        header = "📬 *ADA EMAIL MASUK DI INBOX!*"
+                        info   = (
+                            "⚠️ Ada email masuk di inbox setelah banding dikirim.\n"
+                            "Mungkin ini balasan dari WhatsApp, silakan cek manual.\n\n"
+                            "Kalau bukan balasan WA, abaikan saja.\n"
+                            "Bot akan tetap monitor untuk balasan resmi."
+                        )
 
                     try:
                         await bot.send_message(
                             chat_id=chat_id,
                             text=(
-                                f"📬 *EMAIL DIBALAS — SUKSES!*\n"
+                                f"{header}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
                                 f"📱 Nomor : `{phone}`\n"
                                 f"📧 SMTP  : `{smtp_em}`\n"
-                                f"✅ Status : Banding berhasil terkirim!\n\n"
-                                f"🤖 *PESAN DARI AI ASISTEN*\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"👋 Hallo, kabar gembira nih!\n\n"
-                                f"Email banding kamu sudah dibalas positif — "
-                                f"kemungkinan besar nomor kamu sudah berhasil "
-                                f"diaktifkan kembali! Coba buka WhatsApp dan "
-                                f"cek nomor kamu ya. Kalau masih ada kendala, "
-                                f"coba banding ulang dengan /fix.\n\n"
-                                f"📩 *ISI BALASAN EMAIL*\n"
+                                f"{info}\n\n"
+                                f"📩 *DETAIL EMAIL*\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📧 SMTP Dipakai: `{smtp_em}`\n"
-                                f"📧 Dari: {reply.get('from', '-')}\n"
-                                f"📌 Subject: {reply.get('subject', '-')}\n"
+                                f"📧 Dari    : {reply.get('from', '-')}\n"
+                                f"📌 Subject : {reply.get('subject', '-')}\n"
+                                f"📅 Tanggal : {reply.get('date', '-')}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
                                 f"{body_preview}"
                             ),
                             parse_mode="Markdown",
                         )
-                        mark_notified(key)
-                        logger.info(f"Notifikasi balasan terkirim ke {chat_id} untuk {phone}")
+                        if confirmed:
+                            mark_notified(key)
+                        logger.info(f"Notifikasi balasan terkirim ke {chat_id} untuk {phone} (confirmed={confirmed})")
                     except Exception as e:
                         logger.error(f"Gagal kirim notif ke {chat_id}: {e}")
+
+                elif check_count > 0 and check_count % 6 == 0:
+                    # Setiap 6 check (~30 menit), kirim status update ke user
+                    try:
+                        elapsed_min = (check_count * 5)
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                f"🔍 *Monitor Banding Aktif*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📱 Nomor  : `{phone}`\n"
+                                f"📧 SMTP   : `{smtp_em}`\n"
+                                f"⏱ Elapsed : ±{elapsed_min} menit\n"
+                                f"🔄 Dicek   : {check_count + 1}x\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"ℹ️ Belum ada balasan dari WhatsApp.\n"
+                                f"Bot tetap monitoring setiap 5 menit.\n"
+                                f"Biasanya WhatsApp balas dalam 1–24 jam."
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:
+                        logger.error(f"Gagal kirim status update ke {chat_id}: {e}")
 
         except Exception as e:
             logger.error(f"IMAP monitor error: {e}")
@@ -1038,6 +1130,76 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]]),
             )
 
+    # ── Auto Generate SMTP ────────────────────────────────────────────────────
+    elif data == "autogen_smtp":
+        await query.edit_message_text(
+            "🤖 *Auto Generate SMTP*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Bot akan otomatis membuat akun SMTP via backend — "
+            "tanpa perlu input manual apapun.\n\n"
+            "📌 *Pilih provider:*\n\n"
+            "🌐 *Mail.tm* — gratis, tanpa token, langsung jadi\n"
+            "📬 *Mailtrap* — butuh `MAILTRAP_API_TOKEN` di env\n\n"
+            "Klik tombol di bawah untuk mulai generate:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌐 Generate via Mail.tm",   callback_data="autogen_mailtm")],
+                [InlineKeyboardButton("📬 Generate via Mailtrap",  callback_data="autogen_mailtrap")],
+                [InlineKeyboardButton("🔙 Kembali",                callback_data="back_main")],
+            ]),
+        )
+
+    elif data in ("autogen_mailtm", "autogen_mailtrap"):
+        provider = "mailtm" if data == "autogen_mailtm" else "mailtrap"
+        pname    = "Mail.tm" if provider == "mailtm" else "Mailtrap"
+        await query.edit_message_text(
+            f"⏳ *Auto-generate SMTP via {pname}...*\nMohon tunggu...",
+            parse_mode="Markdown",
+        )
+        result = await asyncio.to_thread(auto_gen_smtp, provider)
+        if not result["success"]:
+            await query.edit_message_text(
+                f"❌ *Generate Gagal*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ {result.get('error', 'Unknown error')}\n\n"
+                f"💡 {'Pastikan `MAILTRAP_API_TOKEN` diset di env.' if provider == 'mailtrap' else 'Coba lagi atau pilih provider lain.'}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi",  callback_data=data)],
+                    [InlineKeyboardButton("🔙 Kembali",    callback_data="autogen_smtp")],
+                ]),
+            )
+            return
+        save_result = await asyncio.to_thread(manager.add_auto_generated, result)
+        if not save_result["success"]:
+            await query.edit_message_text(
+                f"❌ *Gagal simpan akun*\n{save_result.get('error', '')}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="autogen_smtp")
+                ]]),
+            )
+            return
+        key = save_result.get("email", result.get("key", "-"))
+        await query.edit_message_text(
+            f"✅ *SMTP Auto-Generate Berhasil!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔖 Provider : `{result.get('provider', pname)}`\n"
+            f"👤 Key/User : `{key}`\n"
+            f"🔑 Password : `{result.get('password', '-')}`\n"
+            f"📤 SMTP     : `{result.get('smtp_host')}:{result.get('smtp_port')}`\n"
+            f"📥 IMAP     : `{result.get('imap_host')}:{result.get('imap_port')}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 {result.get('note', '')}\n\n"
+            f"💾 Tersimpan otomatis & siap digunakan!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🤖 Generate Lagi",    callback_data=data)],
+                [InlineKeyboardButton("📂 Lihat Akun SMTP", callback_data="list_smtp")],
+                [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
+            ]),
+        )
+
     elif data == "fix_info":
         await query.edit_message_text(
             "🔧 *WhatsApp Fix — Banding Ban*\n"
@@ -1111,6 +1273,7 @@ def main():
     app.add_handler(CommandHandler("status",      cmd_status))
     app.add_handler(CommandHandler("help",        cmd_help))
     app.add_handler(CommandHandler("fix",         cmd_fix))
+    app.add_handler(CommandHandler("autogen",     cmd_autogen))
     app.add_handler(CommandHandler("update",      cmd_update))
     app.add_handler(CallbackQueryHandler(button_handler))
     # Handler untuk upload file .txt
@@ -1127,6 +1290,7 @@ def main():
             BotCommand("listsmtp",    "📂 Lihat semua akun SMTP"),
             BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
             BotCommand("fix",         "🔧 Banding ban WhatsApp"),
+            BotCommand("autogen",     "🤖 Auto generate SMTP via backend"),
             BotCommand("update",      "🔄 Cek & update bot dari GitHub"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),

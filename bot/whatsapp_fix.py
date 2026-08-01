@@ -1,6 +1,13 @@
 """
 WhatsApp Fix — kirim email banding ke support@support.whatsapp.com
 dan monitor IMAP untuk balasan otomatis.
+
+Fix v2:
+- IMAP login pakai `username` field jika ada (Mailtrap pakai username, bukan email)
+- Search fallback: coba strict FROM filter dulu, kalau 0 hasil coba ALL sejak tanggal
+- Filter di Python (lebih andal daripada IMAP server-side filter)
+- Logging di setiap langkah agar mudah debug
+- Skip akun tanpa imap_host yang valid
 """
 
 import smtplib
@@ -21,7 +28,19 @@ logger = logging.getLogger(__name__)
 # File simpan pending fix requests
 PENDING_FILE = Path(__file__).parent / "pending_fixes.json"
 
-WHATSAPP_SUPPORT = "support@support.whatsapp.com"
+WHATSAPP_SUPPORT   = "support@support.whatsapp.com"
+WHATSAPP_KEYWORDS  = [
+    "whatsapp",
+    "support@support.whatsapp.com",
+    "whatsapp ban",
+    "account banned",
+    "noreply@whatsapp.com",
+    "smb@whatsapp.com",
+    "no-reply@whatsapp.com",
+    "appeal",
+    "ban appeal",
+    "account",
+]
 
 # Template email banding
 APPEAL_TEMPLATE = """\
@@ -64,6 +83,7 @@ def add_pending(chat_id: int, phone: str, smtp_email: str, sent_at: float) -> st
         "smtp_email": smtp_email,
         "sent_at":    sent_at,
         "notified":   False,
+        "check_count": 0,
     }
     _save_pending(data)
     return key
@@ -86,39 +106,70 @@ def mark_notified(key: str):
         _save_pending(data)
 
 
+def increment_check(key: str):
+    data = _load_pending()
+    if key in data:
+        data[key]["check_count"] = data[key].get("check_count", 0) + 1
+        _save_pending(data)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Email sender
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_smtp_login(smtp_account: dict) -> tuple[str, str]:
+    """
+    Ambil login SMTP yang benar.
+    - Gmail/Yahoo: pakai email field
+    - Mailtrap: pakai username field (bukan key 'mailtrap:xxx')
+    """
+    username = smtp_account.get("username", "")
+    email    = smtp_account.get("email", "")
+    # Kalau email berisi 'mailtrap:' atau 'mailpit:', pakai username
+    if email.startswith("mailtrap:") or email.startswith("mailpit:"):
+        login = username or email.split(":", 1)[-1]
+    else:
+        login = email
+    return login, smtp_account.get("password", "")
+
+
 def send_appeal_email(smtp_account: dict, phone: str) -> dict:
     """
     Kirim email banding ke support@support.whatsapp.com.
-    smtp_account: dict dengan keys email, password, smtp_host, smtp_port
-    Mengembalikan dict {success, error?}
+    smtp_account: dict dengan keys email/username, password, smtp_host, smtp_port
     """
-    sender   = smtp_account["email"]
-    password = smtp_account["password"]
-    host     = smtp_account["smtp_host"]
-    port     = smtp_account["smtp_port"]
+    login, password = _get_smtp_login(smtp_account)
+    host = smtp_account["smtp_host"]
+    port = int(smtp_account["smtp_port"])
+
+    # Sender address: kalau ada username/email valid pakai itu, otherwise generate
+    sender_email = smtp_account.get("email", login)
+    if sender_email.startswith("mailtrap:") or sender_email.startswith("mailpit:"):
+        # Gunakan format username@host untuk From
+        sender_email = f"{login}@{host.replace('smtp.', '').replace('sandbox.smtp.', '')}"
 
     subject = f"WhatsApp Ban Appeal - {phone}"
     body    = APPEAL_TEMPLATE.format(phone=phone)
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = f"WhatsApp Support <{sender}>"
+    msg["From"]    = sender_email
     msg["To"]      = WHATSAPP_SUPPORT
     msg.attach(MIMEText(body, "plain"))
 
     try:
-        server = smtplib.SMTP(host, int(port), timeout=15)
+        server = smtplib.SMTP(host, port, timeout=15)
         server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(sender, password)
-        server.sendmail(sender, WHATSAPP_SUPPORT, msg.as_string())
+        try:
+            server.starttls()
+            server.ehlo()
+        except Exception:
+            pass  # Beberapa server tidak support STARTTLS (e.g. port 2525 Mailtrap)
+        server.login(login, password)
+        server.sendmail(sender_email, WHATSAPP_SUPPORT, msg.as_string())
         server.quit()
-        return {"success": True}
+        logger.info(f"Email banding terkirim: {sender_email} → {WHATSAPP_SUPPORT}")
+        return {"success": True, "from": sender_email}
     except smtplib.SMTPAuthenticationError:
         return {"success": False, "error": "Auth gagal — periksa email/password SMTP."}
     except Exception as e:
@@ -147,14 +198,10 @@ def _decode_header(val: str) -> str:
 
 def _strip_html(text: str) -> str:
     """Hapus tag HTML dan bersihkan whitespace berlebih."""
-    # Ganti <br>, <p>, <div> dengan newline dulu
     text = re.sub(r"<br\s*/?>|</p>|</div>|</tr>", "\n", text, flags=re.IGNORECASE)
-    # Hapus semua tag HTML
     text = re.sub(r"<[^>]+>", "", text)
-    # Decode HTML entities
     text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">") \
                .replace("&nbsp;", " ").replace("&#039;", "'").replace("&quot;", '"')
-    # Bersihkan baris kosong berlebih
     lines = [l.strip() for l in text.splitlines()]
     lines = [l for l in lines if l]
     return "\n".join(lines)
@@ -196,76 +243,165 @@ def _get_email_body(msg) -> str:
         except Exception:
             pass
 
-    # Pilih plain text; kalau tidak ada, strip dari HTML
     body = plain if plain else _strip_html(html)
-
-    # Bersihkan quoted-printable artifacts (=20, =\n, dll)
+    # Bersihkan quoted-printable
     body = re.sub(r"=\r?\n", "", body)
     body = re.sub(r"=[0-9A-Fa-f]{2}", lambda m: chr(int(m.group()[1:], 16)), body)
 
-    # Potong jika terlalu panjang
     if len(body) > 600:
         body = body[:600] + "…"
     return body.strip()
 
 
+def _is_whatsapp_reply(from_addr: str, subject: str) -> bool:
+    """Cek apakah email ini dari WhatsApp support."""
+    combined = (from_addr + " " + subject).lower()
+    return any(kw in combined for kw in WHATSAPP_KEYWORDS)
+
+
+def _is_likely_whatsapp(from_addr: str, subject: str) -> bool:
+    """Pengecekan lebih longgar — email apapun yang masuk setelah kirim banding."""
+    combined = (from_addr + " " + subject).lower()
+    # Pasti WA
+    if any(kw in combined for kw in WHATSAPP_KEYWORDS):
+        return True
+    # Apapun yang terlihat seperti balasan otomatis/support
+    soft_kw = ["noreply", "no-reply", "support", "donotreply", "do-not-reply", "autoresponder"]
+    return any(kw in combined for kw in soft_kw)
+
+
+def _get_imap_login(smtp_account: dict) -> tuple[str, str]:
+    """
+    Ambil login IMAP yang benar.
+    - Gmail/Yahoo  : pakai email
+    - Mailtrap     : pakai username field
+    - Mail.tm      : pakai email (address)
+    """
+    email    = smtp_account.get("email", "")
+    username = smtp_account.get("username", "")
+    password = smtp_account.get("password", "")
+
+    if email.startswith("mailtrap:") or email.startswith("mailpit:"):
+        login = username or email.split(":", 1)[-1]
+    else:
+        login = email
+    return login, password
+
+
 def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> Optional[dict]:
     """
     Cek IMAP apakah ada balasan dari WhatsApp support sejak waktu tertentu.
-    Mengembalikan dict {subject, body, from, date} atau None jika tidak ada.
+
+    Strategi:
+    1. Login IMAP (gunakan username yang benar, bukan key)
+    2. Coba search strict: FROM "whatsapp" SINCE <date>
+    3. Kalau 0 hasil, coba broad: ALL SINCE <date>  (filter di Python)
+    4. Return dict {subject, body, from, date} atau None jika tidak ada.
     """
     imap_host = smtp_account.get("imap_host", "")
     imap_port = int(smtp_account.get("imap_port", 993))
-    email_addr = smtp_account["email"]
-    password   = smtp_account["password"]
 
-    if not imap_host:
+    # Skip jika tidak ada IMAP host valid
+    if not imap_host or imap_host in ("localhost", "127.0.0.1"):
+        logger.debug(f"IMAP skip — host tidak valid: {imap_host}")
         return None
 
+    login, password = _get_imap_login(smtp_account)
+    if not login or not password:
+        logger.warning("IMAP skip — login/password kosong")
+        return None
+
+    since_date = datetime.fromtimestamp(since_timestamp, tz=timezone.utc)
+    date_str   = since_date.strftime("%d-%b-%Y")
+
+    logger.debug(f"IMAP check — {login}@{imap_host}:{imap_port} since {date_str}")
+
     try:
-        conn = imaplib.IMAP4_SSL(imap_host, imap_port)
-        conn.login(email_addr, password)
+        conn = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=20)
+        try:
+            conn.login(login, password)
+        except imaplib.IMAP4.error as e:
+            logger.warning(f"IMAP login gagal ({login}@{imap_host}): {e}")
+            return None
+
         conn.select("INBOX")
 
-        # Cari email dari whatsapp support sejak tanggal kirim
-        since_date = datetime.fromtimestamp(since_timestamp, tz=timezone.utc)
-        date_str   = since_date.strftime("%d-%b-%Y")
+        # ── Coba search strict: FROM whatsapp ─────────────────────────────────
+        ids = []
+        try:
+            _, data = conn.search(None, f'(FROM "whatsapp" SINCE {date_str})')
+            ids = data[0].split() if data[0] else []
+            logger.debug(f"IMAP strict search → {len(ids)} pesan")
+        except Exception as e:
+            logger.debug(f"IMAP strict search error: {e}")
 
-        _, data = conn.search(None, f'(FROM "whatsapp" SINCE {date_str})')
-        ids = data[0].split() if data[0] else []
+        # ── Fallback: ALL email sejak tanggal kirim ───────────────────────────
+        if not ids:
+            try:
+                _, data2 = conn.search(None, f'(SINCE {date_str})')
+                ids = data2[0].split() if data2[0] else []
+                logger.debug(f"IMAP broad search → {len(ids)} pesan")
+            except Exception as e:
+                logger.debug(f"IMAP broad search error: {e}")
 
-        # Ambil email terbaru yang belum dibaca dari WhatsApp
+        if not ids:
+            conn.logout()
+            logger.debug("IMAP — tidak ada pesan baru")
+            return None
+
+        # ── Periksa tiap email, filter di Python ─────────────────────────────
+        # Pass 1: cari yang pasti dari WA
+        best_possible = None
         for uid in reversed(ids):
-            _, msg_data = conn.fetch(uid, "(RFC822)")
-            if not msg_data or not msg_data[0]:
+            try:
+                _, msg_data = conn.fetch(uid, "(RFC822)")
+                if not msg_data or not msg_data[0]:
+                    continue
+                raw = msg_data[0][1]
+                msg = email_lib.message_from_bytes(raw)
+            except Exception as e:
+                logger.debug(f"IMAP fetch uid {uid} error: {e}")
                 continue
-            raw = msg_data[0][1]
-            msg = email_lib.message_from_bytes(raw)
 
             from_addr = _decode_header(msg.get("From", ""))
             subject   = _decode_header(msg.get("Subject", ""))
-            date_str2 = msg.get("Date", "")
+            date_hdr  = msg.get("Date", "")
+            body      = _get_email_body(msg)
 
-            # Filter: hanya dari support WhatsApp
-            if "whatsapp" not in from_addr.lower() and "whatsapp" not in subject.lower():
-                continue
+            if _is_whatsapp_reply(from_addr, subject):
+                conn.logout()
+                logger.info(f"✅ Balasan WA ditemukan! From: {from_addr} | Subject: {subject}")
+                return {
+                    "from":     from_addr,
+                    "subject":  subject,
+                    "date":     date_hdr,
+                    "body":     body,
+                    "confirmed": True,
+                }
 
-            body = _get_email_body(msg)
-
-            conn.logout()
-            return {
-                "from":    from_addr,
-                "subject": subject,
-                "date":    date_str2,
-                "body":    body,
-            }
+            # Simpan kandidat terbaik (email apapun yang masuk setelah banding)
+            if best_possible is None and _is_likely_whatsapp(from_addr, subject):
+                best_possible = {
+                    "from":     from_addr,
+                    "subject":  subject,
+                    "date":     date_hdr,
+                    "body":     body,
+                    "confirmed": False,
+                }
 
         conn.logout()
+
+        # Jika tidak ada email pasti dari WA tapi ada email lain masuk, laporkan juga
+        if best_possible:
+            logger.info(f"📬 Email masuk setelah banding (kemungkinan balasan): {best_possible['from']}")
+            return best_possible
+
+        logger.debug("IMAP — tidak ada balasan WA setelah filter")
         return None
 
     except imaplib.IMAP4.error as e:
-        logger.warning(f"IMAP error untuk {email_addr}: {e}")
+        logger.warning(f"IMAP error ({login}@{imap_host}): {e}")
         return None
     except Exception as e:
-        logger.warning(f"Check reply error: {e}")
+        logger.warning(f"check_whatsapp_reply error: {e}")
         return None
