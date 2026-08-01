@@ -14,13 +14,12 @@ Env vars:
   CPANEL_PASS     – cPanel password
 """
 
+import logging
 import os
-import re
 import random
 import string
-import logging
+
 import requests
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
@@ -88,7 +87,7 @@ def _rnd_pass(n=14) -> str:
 # Backend 1: PHP Proxy API (UTAMA untuk InfinityFree)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _proxy_call(action: str, params: dict = None) -> dict:
+def _proxy_call(action: str, params: dict | None = None) -> dict:
     """Panggil api_email.php yang ada di hosting InfinityFree."""
     payload = {"key": CPANEL_API_KEY, "action": action}
     if params:
@@ -157,7 +156,7 @@ def _cpanel_uapi_list() -> dict:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def create_email(username: Optional[str] = None, password: Optional[str] = None,
+def create_email(username: str | None = None, password: str | None = None,
                  quota: int = 250) -> dict:
     if not is_configured():
         return {

@@ -3,11 +3,11 @@ GitHub Auto-Updater
 Cek commit terbaru di repo, trigger workflow_dispatch jika ada update baru.
 """
 
-import os
 import json
 import logging
-import urllib.request
+import os
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

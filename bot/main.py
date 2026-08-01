@@ -1,48 +1,46 @@
-import os
-import re
 import asyncio
 import logging
+import os
+import re
 import time
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
+
 from github_updater import (
-    get_latest_commit,
-    get_cached_commit,
+    check_for_update,
     save_commit,
     trigger_update,
-    check_for_update,
 )
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-from smtp_generator import SMTPGenerator
-from smtp_manager import SMTPManager
-from smtp_auto_generator import auto_gen_smtp, MAILTRAP_API_TOKEN
-from whatsapp_fix import (
-    send_appeal_email,
-    check_whatsapp_reply,
-    add_pending,
-    remove_pending,
-    get_all_pending,
-    mark_notified,
-    increment_check,
-)
+from number_files import delete_file, detect_region, list_files, load_file, save_file
 from number_manager import (
-    parse_numbers_from_text,
-    pick_random,
+    WA_CHECKER_URL,
     check_numbers,
     is_checker_connected,
+    parse_numbers_from_text,
+    pick_random,
     status_emoji,
     status_label,
-    WA_CHECKER_URL,
 )
-from number_files import save_file, list_files, load_file, delete_file, detect_region
+from smtp_auto_generator import MAILTRAP_API_TOKEN, auto_gen_smtp
+from smtp_generator import SMTPGenerator
+from smtp_manager import SMTPManager
+from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+from whatsapp_fix import (
+    add_pending,
+    check_whatsapp_reply,
+    get_all_pending,
+    increment_check,
+    mark_notified,
+    send_appeal_email,
+)
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -179,17 +177,17 @@ def fmt_smtp_add_fail(r: dict) -> str:
 
 def fmt_number_results(results: list[dict], total_in_file: int) -> str:
     lines = [
-        f"📱 *Hasil Cek Nomor WhatsApp*",
-        f"━━━━━━━━━━━━━━━━━━━━",
+        "📱 *Hasil Cek Nomor WhatsApp*",
+        "━━━━━━━━━━━━━━━━━━━━",
         f"📄 Total nomor di file: {total_in_file}",
         f"🎲 Dipilih acak: {len(results)} nomor",
-        f"━━━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━━━",
     ]
     for r in results:
         icon = status_emoji(r["registered"])
         lbl  = status_label(r["registered"])
         lines.append(f"{icon} `{r['phone']}` — {lbl}")
-    lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
     if not is_checker_connected():
         lines.append("⚠️ WA Checker belum terhubung — status tidak bisa dicek")
         lines.append("Tekan *Connect WA Checker* untuk konfigurasi")
@@ -658,7 +656,7 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    key     = add_pending(chat_id, phone, smtp_email, sent_at)
+    add_pending(chat_id, phone, smtp_email, sent_at)
 
     await msg.edit_text(
         f"📬 *EMAIL BANDING TERKIRIM!*\n"
@@ -1081,7 +1079,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 rows = []
                 lines = [
-                    f"✅ File dihapus.",
+                    "✅ File dihapus.",
                     "",
                     "📁 *File Manager Nomor WA*",
                     "━━━━━━━━━━━━━━━━━━━━",
@@ -1135,9 +1133,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         more        = len(all_numbers) - len(preview)
         lines = [
             f"👁 *Isi File:* `{filename}`",
-            f"━━━━━━━━━━━━━━━━━━━━",
+            "━━━━━━━━━━━━━━━━━━━━",
             f"📊 Total: *{len(all_numbers)}* nomor",
-            f"━━━━━━━━━━━━━━━━━━━━",
+            "━━━━━━━━━━━━━━━━━━━━",
         ]
         for num in preview:
             lines.append(f"• `{num}`")
@@ -1293,7 +1291,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "status":
         checker_ok = is_checker_connected()
-        ch_status  = f"✅ Terhubung" if checker_ok else "⚠️ Belum setup"
+        ch_status  = "✅ Terhubung" if checker_ok else "⚠️ Belum setup"
         await query.edit_message_text(
             f"📊 *Status Bot*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"

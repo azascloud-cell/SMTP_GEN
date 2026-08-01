@@ -3,15 +3,14 @@ Number Files — simpan, list, load, hapus file .txt nomor WA
 ke GitHub (data/numbers/) agar persisten antar restart bot.
 """
 
+import base64
+import json
+import logging
 import os
 import re
-import json
-import base64
-import logging
-import urllib.request
 import urllib.error
+import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
 
 # Daftar nama negara yang dikenali dari nama file
 _COUNTRY_KEYWORDS: list[tuple[str, str]] = [
@@ -212,7 +211,7 @@ def save_file(original_name: str, content: str, chat_id: int, total: int) -> dic
     if sha:
         payload["sha"] = sha
 
-    code, body = _gh(_api(gh_path), method="PUT", body=payload)
+    code, _body = _gh(_api(gh_path), method="PUT", body=payload)
     if code not in (200, 201):
         return {"success": False, "error": f"GitHub PUT gagal: HTTP {code}"}
 
