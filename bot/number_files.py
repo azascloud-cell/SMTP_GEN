@@ -123,9 +123,9 @@ def _gh(url: str, method: str = "GET", body: dict | None = None) -> tuple[int, d
         raw = e.read().decode("utf-8")
         try:
             return e.code, json.loads(raw)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return e.code, {}
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         logger.warning(f"GitHub API error: {ex}")
         return 0, {}
 
@@ -159,7 +159,7 @@ def _load_index() -> dict:
         try:
             raw = base64.b64decode(body["content"]).decode("utf-8")
             return json.loads(raw)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     return {}
 
@@ -266,7 +266,7 @@ def load_file(filename: str) -> list[str] | None:
     try:
         raw = base64.b64decode(body["content"]).decode("utf-8")
         return raw.splitlines()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"load_file {filename} error: {e}")
         return None
 

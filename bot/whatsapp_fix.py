@@ -163,7 +163,7 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
         try:
             server.starttls()
             server.ehlo()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass  # Beberapa server tidak support STARTTLS (e.g. port 2525 Mailtrap)
         server.login(login, password)
         server.sendmail(sender_email, WHATSAPP_SUPPORT, msg.as_string())
@@ -172,7 +172,7 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
         return {"success": True, "from": sender_email}
     except smtplib.SMTPAuthenticationError:
         return {"success": False, "error": "Auth gagal — periksa email/password SMTP."}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"success": False, "error": str(e)}
 
 
@@ -192,7 +192,7 @@ def _decode_header(val: str) -> str:
             else:
                 decoded.append(part)
         return " ".join(decoded)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return val or ""
 
 
@@ -228,7 +228,7 @@ def _get_email_body(msg) -> str:
                     plain = decoded
                 elif ct == "text/html" and not html:
                     html = decoded
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
     else:
         try:
@@ -240,7 +240,7 @@ def _get_email_body(msg) -> str:
                     html = body
                 else:
                     plain = body
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
     body = plain if plain else _strip_html(html)
@@ -332,7 +332,7 @@ def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> dict | N
             _, data = conn.search(None, f'(FROM "whatsapp" SINCE {date_str})')
             ids = data[0].split() if data[0] else []
             logger.debug(f"IMAP strict search → {len(ids)} pesan")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"IMAP strict search error: {e}")
 
         # ── Fallback: ALL email sejak tanggal kirim ───────────────────────────
@@ -341,7 +341,7 @@ def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> dict | N
                 _, data2 = conn.search(None, f'(SINCE {date_str})')
                 ids = data2[0].split() if data2[0] else []
                 logger.debug(f"IMAP broad search → {len(ids)} pesan")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug(f"IMAP broad search error: {e}")
 
         if not ids:
@@ -359,7 +359,7 @@ def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> dict | N
                     continue
                 raw = msg_data[0][1]
                 msg = email_lib.message_from_bytes(raw)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug(f"IMAP fetch uid {uid} error: {e}")
                 continue
 
@@ -402,6 +402,6 @@ def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> dict | N
     except imaplib.IMAP4.error as e:
         logger.warning(f"IMAP error ({login}@{imap_host}): {e}")
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"check_whatsapp_reply error: {e}")
         return None

@@ -102,7 +102,7 @@ def _proxy_call(action: str, params: dict | None = None) -> dict:
         return data
     except requests.exceptions.ConnectionError as e:
         return {"ok": False, "error": f"Tidak bisa reach {CPANEL_API_URL}. Pastikan domain aktif dan file sudah diupload. Detail: {e}"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
 
 
@@ -134,7 +134,7 @@ def _cpanel_uapi_create(username: str, password: str, quota: int = 250) -> dict:
             return {"ok": True}
         errors = data.get("errors") or [data.get("message", "Unknown")]
         return {"ok": False, "error": "; ".join(str(e) for e in errors)}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
 
 
@@ -148,7 +148,7 @@ def _cpanel_uapi_list() -> dict:
             accs = [a.get("email", "") for a in data.get("data", [])]
             return {"ok": True, "accounts": accs, "count": len(accs)}
         return {"ok": False, "error": "Gagal list email.", "accounts": []}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e), "accounts": []}
 
 
@@ -215,7 +215,7 @@ def delete_email(username: str) -> dict:
                            auth=(CPANEL_USER, CPANEL_PASS), timeout=TIMEOUT, verify=False)
         d   = r.json()
         return {"success": d.get("status") == 1, "error": str(d.get("errors", ""))}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"success": False, "error": str(e)}
 
 
@@ -285,6 +285,6 @@ def test_connection() -> dict:
                 "domain": CPANEL_DOMAIN, "dns_ready": dns["dns_ready"],
                 "dns_details": dns["details"],
                 "accounts": len(d.get("data", []))}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"success": False, "error": str(e), "backend": backend,
                 "dns_ready": dns["dns_ready"], "dns_details": dns["details"]}

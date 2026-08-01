@@ -100,7 +100,7 @@ def gen_mailtrap_inbox(api_token: str = "") -> dict:
             "note":      f"Inbox '{inbox_name}' di mailtrap.io/inboxes/{inbox_id}",
         }
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"gen_mailtrap_inbox error: {e}")
         return {"success": False, "error": str(e)}
 
@@ -164,7 +164,7 @@ def gen_mailtm_smtp() -> dict:
             "note":      f"Akun mail.tm — inbox di mail.tm (JWT login {'✅' if jwt_ok else '⚠️'})",
         }
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"gen_mailtm_smtp error: {e}")
         return {"success": False, "error": str(e)}
 
@@ -199,8 +199,33 @@ def gen_guerrilla_smtp() -> dict:
             "imap_port": 993,
             "note":      "Guerrilla Mail — cek inbox di guerrillamail.com",
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"success": False, "error": str(e)}
+
+
+def gen_mailpit_smtp() -> dict:
+    """
+    Generate SMTP untuk Mailpit (local self-hosted).
+    Default host: localhost, port: 1025. Tanpa username/password.
+    """
+    host = os.environ.get("MAILPIT_SMTP_HOST", "localhost")
+    try:
+        port = int(os.environ.get("MAILPIT_SMTP_PORT", "1025"))
+    except ValueError:
+        port = 1025
+
+    return {
+        "success":   True,
+        "provider":  "Mailpit",
+        "key":       f"mailpit:{host}:{port}",
+        "username":  "",
+        "password":  "",
+        "smtp_host": host,
+        "smtp_port": port,
+        "imap_host": host,
+        "imap_port": 110,
+        "note":      f"Mailpit Local SMTP — host: {host}:{port}",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -210,6 +235,7 @@ def gen_guerrilla_smtp() -> dict:
 BACKEND_PROVIDERS = {
     "mailtrap": gen_mailtrap_inbox,
     "mailtm":   gen_mailtm_smtp,
+    "mailpit":  gen_mailpit_smtp,
 }
 
 
