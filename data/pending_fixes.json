@@ -4,6 +4,7 @@
     "phone": "+249110807047",
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785570131.7551413,
-    "notified": false
+    "notified": false,
+    "check_count": 1
   }
 }
