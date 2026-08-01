@@ -42,9 +42,9 @@ def _gh(url: str, method: str = "GET", body: dict | None = None) -> tuple[int, d
         raw = e.read().decode("utf-8")
         try:
             return e.code, json.loads(raw)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return e.code, {}
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         logger.warning(f"GitHub API error: {ex}")
         return 0, {}
 
@@ -72,14 +72,14 @@ def load(path: Path) -> dict:
                 path.write_text(json.dumps(data, indent=2))
                 logger.debug(f"Loaded {path.name} from GitHub ({len(data)} entries)")
                 return data
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"Decode GitHub data gagal ({path.name}): {e}")
 
     # Fallback lokal
     if path.exists():
         try:
             return json.loads(path.read_text())
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
     return {}
 

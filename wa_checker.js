@@ -107,6 +107,26 @@ async function startWA() {
         }, 6000);
     }
 
+    app.get('/pair', async (req, res) => {
+        const phone = req.query.phone;
+        if (!phone) {
+            return res.status(400).json({ error: "Missing phone parameter" });
+        }
+        if (sock.authState.creds.registered) {
+            return res.status(400).json({ error: "WA Checker is already linked/registered." });
+        }
+        try {
+            const cleanPhone = phone.replace(/[^\d]/g, '');
+            console.log(`Requesting pairing code for: ${cleanPhone}`);
+            const code = await sock.requestPairingCode(cleanPhone);
+            console.log(`PAIRING CODE GENERATED: ${code}`);
+            return res.json({ success: true, code: code, phone: cleanPhone });
+        } catch (err) {
+            console.error("Failed to request pairing code:", err);
+            return res.status(500).json({ error: err.message });
+        }
+    });
+
     app.get('/check', async (req, res) => {
         const phone = req.query.phone;
         if (!phone) {

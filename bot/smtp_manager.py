@@ -105,7 +105,7 @@ def verify_smtp_plain(host: str, port: int, username: str, password: str, timeou
         try:
             server.starttls()
             server.ehlo()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         if username and password:
             server.login(username, password)
@@ -115,7 +115,7 @@ def verify_smtp_plain(host: str, port: int, username: str, password: str, timeou
         return {"success": False, "error": "Login ditolak. Periksa username/password."}
     except smtplib.SMTPConnectError as e:
         return {"success": False, "error": f"Tidak bisa connect ke {host}:{port} – {e}"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"success": False, "error": str(e)}
 
 
@@ -133,7 +133,7 @@ def verify_smtp(email: str, password: str, host: str, port: int, timeout: int = 
         return {"success": False, "error": "Login ditolak. Periksa email/password atau aktifkan App Password."}
     except smtplib.SMTPConnectError as e:
         return {"success": False, "error": f"Tidak bisa connect ke {host}:{port} – {e}"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"success": False, "error": str(e)}
 
 
@@ -146,7 +146,7 @@ def verify_imap(email: str, password: str, host: str, port: int, timeout: int = 
         return {"success": True, "method": "IMAP SSL"}
     except imaplib.IMAP4.error as e:
         return {"success": False, "error": f"IMAP auth gagal: {e}"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"success": False, "error": str(e)}
 
 

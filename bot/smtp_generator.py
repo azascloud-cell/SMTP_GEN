@@ -8,6 +8,7 @@ import random
 import re
 import string
 from datetime import datetime, timedelta, timezone
+from typing import ClassVar
 
 import requests
 
@@ -47,8 +48,8 @@ class _1SecMail:
     """https://www.1secmail.com — temporary mailbox with SMTP read via API."""
 
     NAME = "1SecMail"
-    DOMAINS = ["1secmail.com", "1secmail.net", "1secmail.org",
-               "esiix.com", "wwjmp.com", "xojxe.com"]
+    DOMAINS: ClassVar[list[str]] = ["1secmail.com", "1secmail.net", "1secmail.org",
+                                    "esiix.com", "wwjmp.com", "xojxe.com"]
 
     def generate(self) -> dict:
         username = _random_str(12)
@@ -63,7 +64,7 @@ class _1SecMail:
                 params={"action": "getMessages", "login": username, "domain": domain},
                 timeout=TIMEOUT,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
 
         return {
@@ -101,7 +102,7 @@ class _1SecMail:
                         "date":    msg.get("date", "?"),
                     })
                 return results
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"1SecMail check inbox error: {e}")
         return []
 
@@ -124,7 +125,7 @@ class _1SecMail:
                     "date":    msg.get("date", "?"),
                     "body":    msg.get("textBody") or _strip_html(msg.get("htmlBody", "")),
                 }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"1SecMail read message error: {e}")
         return None
 
@@ -146,7 +147,7 @@ class _GuerrillaMail:
             sid   = data.get("sid_token", "")
             if not email:
                 raise ValueError("No email returned")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"GuerrillaMail API error: {e}")
             email = f"{_random_str(10)}@guerrillamailblock.com"
             sid   = ""
@@ -190,7 +191,7 @@ class _GuerrillaMail:
                         "date":    msg.get("mail_date", "?"),
                     })
                 return results
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"GuerrillaMail check inbox error: {e}")
         return []
 
@@ -212,7 +213,7 @@ class _GuerrillaMail:
                     "date":    data.get("mail_date", "?"),
                     "body":    data.get("mail_body", ""),
                 }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"GuerrillaMail read message error: {e}")
         return None
 
@@ -228,7 +229,7 @@ class _MailTm:
             r = SESSION.get(f"{self.BASE}/domains", timeout=TIMEOUT)
             domains = r.json().get("hydra:member", [])
             return domains[0]["domain"] if domains else None
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
 
     def generate(self) -> dict:
@@ -246,7 +247,7 @@ class _MailTm:
             )
             if reg.status_code not in (200, 201):
                 raise ValueError(f"Register gagal: {reg.status_code}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Mail.tm register error: {e}")
             # Tetap kembalikan creds meski register gagal (bisa coba manual)
 
@@ -273,7 +274,7 @@ class _MailTm:
             )
             if r.status_code in (200, 201):
                 return r.json().get("token")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Mail.tm get token error: {e}")
         return None
 
@@ -299,7 +300,7 @@ class _MailTm:
                         "date":    msg.get("createdAt", "?"),
                     })
                 return results
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Mail.tm check inbox error: {e}")
         return []
 
@@ -324,7 +325,7 @@ class _MailTm:
                     "date":    msg.get("createdAt", "?"),
                     "body":    msg.get("text") or _strip_html(html_body),
                 }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Mail.tm read message error: {e}")
         return None
 
@@ -333,7 +334,7 @@ class _TempMailOrg:
     """Temp-mail.org compatible – domain acak dari daftar publik."""
 
     NAME  = "TempMail"
-    DOMAINS = [
+    DOMAINS: ClassVar[list[str]] = [
         "tempmail.com", "fakeinbox.com", "mailnull.com",
         "spamgourmet.com", "trashmail.com", "yopmail.com",
     ]
@@ -362,7 +363,7 @@ class _Dispostable:
     """Generate random domain dari daftar disposable yang diketahui."""
 
     NAME    = "Dispostable"
-    DOMAINS = [
+    DOMAINS: ClassVar[list[str]] = [
         "dispostable.com", "spamfree24.org", "maildrop.cc",
         "throwam.com",     "spamthisplease.com",
     ]
@@ -421,7 +422,7 @@ class SMTPGenerator:
             data = provider.generate()
             return {"success": True, "data": data}
         except Exception as e:
-            logger.error(f"[{provider.NAME}] generate error: {e}", exc_info=True)
+            logger.exception(f"[{provider.NAME}] generate error")
             return {"success": False, "error": str(e)}
 
     @staticmethod

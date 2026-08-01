@@ -67,6 +67,9 @@ _user_numbers: dict[int, list[str]] = {}
 # { chat_id: "filename.txt" }
 _last_file_by_chat: dict[int, str] = {}
 
+# ── Index terakhir SMTP yang digunakan untuk rotasi round-robin ───────────────
+_last_smtp_index: int = 0
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def now_utc() -> str:
@@ -503,7 +506,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg_file  = await doc.get_file()
         content  = await tg_file.download_as_bytearray()
         text     = content.decode("utf-8", errors="replace")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         await msg.edit_text(f"❌ Gagal baca file: {e}")
         return
 
@@ -520,10 +523,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _user_numbers[chat_id] = numbers
 
     # Simpan file ke GitHub storage (non-blocking, background)
-    safe_fname = fname.replace("_", "\\_")
+    safe_fname = fname.replace("_", "\\_").replace("*", "\\*")
     await msg.edit_text(
-        f"💾 Menyimpan *{safe_fname}* \\({len(numbers)} nomor\\)\\.\\.\\.",
-        parse_mode="MarkdownV2",
+        f"💾 Menyimpan *{safe_fname}* ({len(numbers)} nomor)...",
+        parse_mode="Markdown",
     )
     sanitized_fname = re.sub(r"[^\w\-.]", "_", fname)
     if not sanitized_fname.lower().endswith(".txt"):
@@ -620,6 +623,7 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phone.startswith("+"):
         phone = "+" + phone
 
+    global _last_smtp_index
     accounts = manager.list_accounts()
     # Filter out auto generated emails because they can't send external email
     verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
@@ -635,7 +639,11 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    smtp_email = verified[0]["email"]
+    # Rotasi/alternating SMTP accounts round-robin
+    idx = _last_smtp_index % len(verified)
+    smtp_email = verified[idx]["email"]
+    _last_smtp_index = (idx + 1) % len(verified)
+
     smtp_full  = manager.get_account(smtp_email)
     if not smtp_full:
         await update.message.reply_text("❌ Gagal ambil data akun SMTP.", parse_mode="Markdown")
@@ -679,6 +687,56 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Kamu akan dinotifikasi jika ada balasan dari WhatsApp.",
         parse_mode="Markdown",
     )
+
+
+def _fetch_pairing_code(phone: str) -> dict:
+    import json
+    import urllib.parse
+    import urllib.request
+    encoded_phone = urllib.parse.quote(phone)
+    url = f"{WA_CHECKER_URL}/pair?phone={encoded_phone}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tautkan WA Checker via Pairing Code. Format: /pair +phone"""
+    phone = " ".join(context.args).strip() if context.args else ""
+    if not phone:
+        await update.message.reply_text(
+            "🔗 *WhatsApp Pairing*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/pair +628xxxxxxxx`\n\n"
+            "Silakan masukkan nomor telepon Anda beserta kode negara untuk meminta pairing code dari WA Checker.",
+            parse_mode="Markdown",
+        )
+        return
+
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    msg = await update.message.reply_text("⏳ Meminta pairing code dari WA Checker...")
+
+    try:
+        resp_data = await asyncio.to_thread(_fetch_pairing_code, phone)
+
+        if resp_data.get("success"):
+            code = resp_data.get("code")
+            clean_phone = resp_data.get("phone")
+            await msg.edit_text(
+                f"🔗 *WhatsApp Pairing Code:*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔑 Code  : `{code}`\n"
+                f"📱 Nomor : `{clean_phone}`\n\n"
+                f"Silakan buka WhatsApp Anda -> perangkat tertaut -> tautkan perangkat -> tautkan dengan nomor telepon, lalu masukkan kode di atas.",
+                parse_mode="Markdown",
+            )
+        else:
+            error_msg = resp_data.get("error", "Gagal meminta pairing code.")
+            await msg.edit_text(f"❌ *Gagal:* {error_msg}", parse_mode="Markdown")
+    except Exception as e:  # noqa: BLE001
+        await msg.edit_text(f"❌ *Error:* Gagal menghubungi WA Checker. Pastikan WA Checker terhubung.\nDetail: {e}", parse_mode="Markdown")
 
 
 async def imap_monitor_loop(bot: Bot):
@@ -749,7 +807,7 @@ async def imap_monitor_loop(bot: Bot):
                         if confirmed:
                             mark_notified(key)
                         logger.info(f"Notifikasi balasan terkirim ke {chat_id} untuk {phone} (confirmed={confirmed})")
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         logger.error(f"Gagal kirim notif ke {chat_id}: {e}")
 
                 elif check_count > 0 and check_count % 20 == 0:
@@ -772,10 +830,10 @@ async def imap_monitor_loop(bot: Bot):
                             ),
                             parse_mode="Markdown",
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         logger.error(f"Gagal kirim status update ke {chat_id}: {e}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"IMAP monitor error: {e}")
 
         await asyncio.sleep(90)
@@ -873,12 +931,12 @@ async def auto_update_loop(bot: Bot):
                             ),
                             parse_mode="Markdown",
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         logger.error(f"Gagal notif auto-update: {e}")
                 elif not trig["success"]:
                     logger.warning(f"Auto-update trigger gagal: {trig.get('error')}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Auto-update loop error: {e}")
 
         await asyncio.sleep(1800)
@@ -949,26 +1007,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ *WA Checker Terhubung*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"🌐 URL: `{WA_CHECKER_URL}`\n\n"
-                f"Bot siap mengecek nomor WhatsApp\\!"
+                f"Bot siap mengecek nomor WhatsApp!"
             )
         else:
             status_text = (
                 "🔗 *Connect WA Checker*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
-                "Untuk cek status WA nomor, siapkan server checker sendiri\\.\n\n"
+                "Untuk cek status WA nomor, siapkan server checker sendiri.\n\n"
                 "*Cara Setup:*\n"
-                "1\\. Siapkan server WA checker \\(contoh: Baileys/WA\\-JS\\)\n"
-                "2\\. Expose endpoint: `GET /check?phone=+628xxx`\n"
+                "1. Siapkan server WA checker (contoh: Baileys/WA-JS)\n"
+                "2. Expose endpoint: `GET /check?phone=+628xxx`\n"
                 "   Response JSON: `{\"registered\": true}`\n"
-                "3\\. Tambah GitHub Secret:\n"
+                "3. Tambah GitHub Secret:\n"
                 "   `WA_CHECKER_URL = https://checker-kamu.example.com`\n"
-                "4\\. Restart bot\n\n"
-                "⚠️ Tanpa checker, status nomor tidak bisa diketahui\\.\n"
-                "Bot tetap bisa memilih & menampilkan nomor dari file\\."
+                "4. Restart bot\n\n"
+                "⚠️ Tanpa checker, status nomor tidak bisa diketahui.\n"
+                "Bot tetap bisa memilih & menampilkan nomor dari file."
             )
         await query.edit_message_text(
             status_text,
-            parse_mode="MarkdownV2",
+            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
             ]]),
@@ -1284,12 +1342,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             body = body[:3000] + "\n\n...[Teks Terpotong]..."
 
         lines = [
-            f"📧 *Detail Email Masuk*",
-            f"━━━━━━━━━━━━━━━━━━━━",
+            "📧 *Detail Email Masuk*",
+            "━━━━━━━━━━━━━━━━━━━━",
             f"👤 *Dari:* `{msg.get('from')}`",
             f"📌 *Subject:* {msg.get('subject')}",
             f"📅 *Tanggal:* {msg.get('date')}",
-            f"━━━━━━━━━━━━━━━━━━━━\n",
+            "━━━━━━━━━━━━━━━━━━━━\n",
             f"{body}",
         ]
         await query.edit_message_text(
@@ -1600,7 +1658,7 @@ def _should_send_startup_notif() -> bool:
                 return False  # sudah terkirim untuk run ini
         _STARTUP_NOTIF_FILE.write_text(RUN_ID)
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return True
 
 
@@ -1631,7 +1689,7 @@ async def send_startup_notification(bot: Bot):
             ),
             parse_mode="Markdown",
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Notif startup gagal: {e}")
 
 
@@ -1651,6 +1709,7 @@ def main():
     app.add_handler(CommandHandler("fix",         cmd_fix))
     app.add_handler(CommandHandler("autogen",     cmd_autogen))
     app.add_handler(CommandHandler("update",      cmd_update))
+    app.add_handler(CommandHandler("pair",        cmd_pair))
     app.add_handler(CallbackQueryHandler(button_handler))
     # Handler untuk upload file .txt
     app.add_handler(MessageHandler(filters.Document.MimeType("text/plain"), handle_document))
@@ -1667,6 +1726,7 @@ def main():
             BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
             BotCommand("fix",         "🔧 Banding ban WhatsApp"),
             BotCommand("autogen",     "🤖 Auto generate SMTP via backend"),
+            BotCommand("pair",        "🔗 Tautkan WhatsApp Checker via Pairing Code"),
             BotCommand("update",      "🔄 Cek & update bot dari GitHub"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),

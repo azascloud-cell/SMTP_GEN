@@ -42,15 +42,15 @@ def _gh_request(url: str, method: str = "GET", body: dict | None = None) -> tupl
             raw = resp.read().decode("utf-8")
             try:
                 return resp.status, json.loads(raw)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return resp.status, raw
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8")
         try:
             return e.code, json.loads(raw)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return e.code, raw
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         return 0, str(ex)
 
 

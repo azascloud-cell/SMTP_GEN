@@ -105,7 +105,7 @@ def check_wa_registered(phone: str) -> bool | None:
     except requests.exceptions.Timeout:
         logger.warning(f"WA checker timeout for {phone}")
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"WA checker error for {phone}: {e}")
         return None
 
