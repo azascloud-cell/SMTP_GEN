@@ -10,18 +10,18 @@ Fix v2:
 - Skip akun tanpa imap_host yang valid
 """
 
-import smtplib
-import imaplib
 import email as email_lib
+import imaplib
 import logging
 import re
-import time
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from pathlib import Path
-from typing import Optional
+import smtplib
 from datetime import datetime, timezone
-from storage import load as _gh_load, save as _gh_save
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+
+from storage import load as _gh_load
+from storage import save as _gh_save
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ def _get_smtp_login(smtp_account: dict) -> tuple[str, str]:
     username = smtp_account.get("username", "")
     email    = smtp_account.get("email", "")
     # Kalau email berisi 'mailtrap:' atau 'mailpit:', pakai username
-    if email.startswith("mailtrap:") or email.startswith("mailpit:"):
+    if email.startswith(("mailtrap:", "mailpit:")):
         login = username or email.split(":", 1)[-1]
     else:
         login = email
@@ -144,7 +144,7 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
 
     # Sender address: kalau ada username/email valid pakai itu, otherwise generate
     sender_email = smtp_account.get("email", login)
-    if sender_email.startswith("mailtrap:") or sender_email.startswith("mailpit:"):
+    if sender_email.startswith(("mailtrap:", "mailpit:")):
         # Gunakan format username@host untuk From
         sender_email = f"{login}@{host.replace('smtp.', '').replace('sandbox.smtp.', '')}"
 
@@ -281,14 +281,14 @@ def _get_imap_login(smtp_account: dict) -> tuple[str, str]:
     username = smtp_account.get("username", "")
     password = smtp_account.get("password", "")
 
-    if email.startswith("mailtrap:") or email.startswith("mailpit:"):
+    if email.startswith(("mailtrap:", "mailpit:")):
         login = username or email.split(":", 1)[-1]
     else:
         login = email
     return login, password
 
 
-def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> Optional[dict]:
+def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> dict | None:
     """
     Cek IMAP apakah ada balasan dari WhatsApp support sejak waktu tertentu.
 

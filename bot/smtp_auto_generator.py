@@ -7,12 +7,12 @@ Strategi:
 2. Mail.tm API   → daftar akun gratis, dapat SMTP credentials (tanpa token)
 """
 
+import logging
 import os
 import random
 import string
-import logging
+
 import requests
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

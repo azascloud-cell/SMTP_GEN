@@ -3,12 +3,12 @@ SMTP Generator – mengambil email sementara dari beberapa provider publik
 dan mengembalikan konfigurasi SMTP / IMAP yang siap pakai.
 """
 
+import logging
 import random
 import string
-import requests
-import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ class _MailTm:
     NAME = "Mail.tm"
     BASE = "https://api.mail.tm"
 
-    def _get_domain(self) -> Optional[str]:
+    def _get_domain(self) -> str | None:
         try:
             r = SESSION.get(f"{self.BASE}/domains", timeout=TIMEOUT)
             domains = r.json().get("hydra:member", [])

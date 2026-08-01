@@ -3,13 +3,13 @@ SMTP Manager – simpan, verifikasi, dan kelola akun SMTP nyata
 (Gmail dengan App Password, atau provider lain yang mendukung)
 """
 
-import os
-import smtplib
 import imaplib
 import logging
+import smtplib
 from pathlib import Path
-from typing import Optional
-from storage import load as _gh_load, save as _gh_save
+
+from storage import load as _gh_load
+from storage import save as _gh_save
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +327,7 @@ class SMTPManager:
         _save(data)
         return {"success": True, "email": email}
 
-    def get_account(self, email: str) -> Optional[dict]:
+    def get_account(self, email: str) -> dict | None:
         data = _load()
         acc  = data.get(email.strip().lower())
         if acc:

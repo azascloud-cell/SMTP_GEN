@@ -15,12 +15,12 @@ WA Checker:
   Jika WA_CHECKER_URL tidak diset, bot menampilkan status "Tidak diketahui".
 """
 
-import os
-import re
-import random
 import logging
+import os
+import random
+import re
+
 import requests
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def is_checker_connected() -> bool:
     return bool(WA_CHECKER_URL)
 
 
-def check_wa_registered(phone: str) -> Optional[bool]:
+def check_wa_registered(phone: str) -> bool | None:
     """
     Cek apakah nomor terdaftar di WhatsApp.
     Return:
@@ -126,7 +126,7 @@ def check_numbers(phones: list[str]) -> list[dict]:
 # Button label helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def status_emoji(registered: Optional[bool]) -> str:
+def status_emoji(registered: bool | None) -> str:
     if registered is True:
         return "🔴"   # Terdaftar WA
     if registered is False:
@@ -134,7 +134,7 @@ def status_emoji(registered: Optional[bool]) -> str:
     return "⚪"       # Tidak diketahui
 
 
-def status_label(registered: Optional[bool]) -> str:
+def status_label(registered: bool | None) -> str:
     if registered is True:
         return "Terdaftar WA"
     if registered is False:
