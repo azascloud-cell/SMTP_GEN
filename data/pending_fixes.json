@@ -37,7 +37,7 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785584937.205619,
     "notified": false,
-    "check_count": 63
+    "check_count": 64
   },
   "6874843931_+62882007662443_1785585457": {
     "chat_id": 6874843931,
@@ -45,7 +45,7 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785585457.0482361,
     "notified": false,
-    "check_count": 57
+    "check_count": 56
   },
   "6874843931_+258863336172_1785586299": {
     "chat_id": 6874843931,
@@ -53,7 +53,7 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785586299.9059715,
     "notified": false,
-    "check_count": 48
+    "check_count": 49
   },
   "6874843931_+966593716405_1785588258": {
     "chat_id": 6874843931,
