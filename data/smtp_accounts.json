@@ -21,18 +21,5 @@
     "imap_ok": true,
     "auto_gen": true,
     "note": "Akun mail.tm \u2014 inbox di mail.tm (JWT login \u2705)"
-  },
-  "v6jepafsqfag@web-library.net": {
-    "password": "8on6nvzytoA1!",
-    "username": "v6jepafsqfag@web-library.net",
-    "provider": "Mail.tm",
-    "smtp_host": "smtp.mail.tm",
-    "smtp_port": 587,
-    "imap_host": "imap.mail.tm",
-    "imap_port": 993,
-    "verified": true,
-    "imap_ok": true,
-    "auto_gen": true,
-    "note": "Akun mail.tm \u2014 inbox di mail.tm (JWT login \u2705)"
   }
 }
