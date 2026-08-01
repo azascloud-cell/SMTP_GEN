@@ -1,14 +1,4 @@
 {
-  "azascloud@gmail.com": {
-    "password": "mvve pjxu omye sfnl",
-    "provider": "gmail.com",
-    "smtp_host": "smtp.gmail.com",
-    "smtp_port": 587,
-    "imap_host": "imap.gmail.com",
-    "imap_port": 993,
-    "verified": true,
-    "imap_ok": true
-  },
   "hs76k3nad8vs@web-library.net": {
     "password": "3hm9yd2v38A1!",
     "username": "hs76k3nad8vs@web-library.net",
