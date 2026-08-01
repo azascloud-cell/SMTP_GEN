@@ -2,18 +2,23 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timezone
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
-    MessageHandler,
-    filters,
-    ConversationHandler,
 )
 from smtp_generator import SMTPGenerator
 from smtp_manager import SMTPManager
+from cpanel_generator import (
+    create_email as cpanel_create,
+    delete_email as cpanel_delete,
+    list_emails as cpanel_list,
+    test_connection as cpanel_test,
+    is_configured as cpanel_configured,
+    CPANEL_DOMAIN,
+)
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -31,9 +36,6 @@ REPO       = os.environ.get("GITHUB_REPOSITORY", "SMTP_GEN")
 generator = SMTPGenerator()
 manager   = SMTPManager()
 
-# ConversationHandler state
-WAITING_SMTP_CREDS = 1
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def now_utc() -> str:
@@ -41,230 +43,243 @@ def now_utc() -> str:
 
 
 def main_menu_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📧 Generate Email Temp",    callback_data="gen")],
-        [InlineKeyboardButton("📋 Pilih Provider Email",   callback_data="menu_provider")],
-        [InlineKeyboardButton("➕ Tambah SMTP Real",        callback_data="add_smtp_info")],
-        [InlineKeyboardButton("📂 Daftar SMTP Tersimpan",  callback_data="list_smtp")],
-        [InlineKeyboardButton("❓ Cara Pakai",              callback_data="howto")],
-        [InlineKeyboardButton("📊 Status Bot",             callback_data="status")],
-    ])
+    cpanel_ok = cpanel_configured()
+    rows = []
+    if cpanel_ok:
+        rows.append([InlineKeyboardButton("⚡ Generate SMTP Real (cPanel)", callback_data="cpanel_gen")])
+        rows.append([InlineKeyboardButton("📂 Lihat Email cPanel",          callback_data="cpanel_list")])
+    rows.append([InlineKeyboardButton("📧 Email Temp (Receive Only)",      callback_data="gen")])
+    rows.append([InlineKeyboardButton("📋 Pilih Provider Email Temp",      callback_data="menu_provider")])
+    rows.append([InlineKeyboardButton("➕ Tambah SMTP Manual",              callback_data="add_smtp_info")])
+    rows.append([InlineKeyboardButton("📂 Akun SMTP Manual",               callback_data="list_smtp")])
+    if not cpanel_ok:
+        rows.append([InlineKeyboardButton("🔧 Setup cPanel (Generate Real)", callback_data="cpanel_setup")])
+    rows.append([InlineKeyboardButton("❓ Cara Pakai",  callback_data="howto"),
+                 InlineKeyboardButton("📊 Status Bot", callback_data="status")])
+    return InlineKeyboardMarkup(rows)
 
 
 def provider_keyboard():
     providers = generator.list_providers()
     rows, row = [], []
-    for i, p in enumerate(providers):
+    for p in providers:
         row.append(InlineKeyboardButton(p, callback_data=f"prov_{p}"))
         if len(row) == 2:
-            rows.append(row)
-            row = []
+            rows.append(row); row = []
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_main")])
     return InlineKeyboardMarkup(rows)
 
 
-def format_tempmail_result(result: dict) -> str:
-    """Format hasil generate email sementara – jelas bahwa ini receive-only."""
-    if not result["success"]:
-        return f"❌ *Gagal generate:* {result.get('error', 'Unknown error')}"
-
-    d = result["data"]
+# ── Formatters ────────────────────────────────────────────────────────────────
+def fmt_cpanel_success(d: dict) -> str:
     return (
-        f"📧 *Email Sementara Berhasil Digenerate!*\n"
+        f"✅ *Email SMTP Real Berhasil Dibuat!*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📬 *Email:* `{d['email']}`\n"
-        f"🔑 *Web Password:* `{d['password']}`\n"
+        f"📧 *Email:* `{d['email']}`\n"
+        f"🔑 *Password:* `{d['password']}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🌐 *Provider:* {d['provider']}\n"
-        f"⏱ *Kadaluarsa:* {d.get('expires', '-')}\n"
-        f"🔗 *Cek Inbox:* {d.get('note', '-')}\n"
+        f"📤 *SMTP Host:* `{d['smtp_host']}`\n"
+        f"🔌 *SMTP Port:* `{d['smtp_port']}` (STARTTLS) / `{d['smtp_port_ssl']}` (SSL)\n"
+        f"👤 *Username:* `{d['email']}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ *CATATAN PENTING:*\n"
-        f"• Email ini hanya untuk *MENERIMA* pesan\n"
-        f"• Tidak bisa dipakai untuk login SMTP/IMAP\n"
-        f"• Untuk kirim email, gunakan menu *Tambah SMTP Real*\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
+        f"📥 *IMAP Host:* `{d['imap_host']}`\n"
+        f"🔌 *IMAP Port:* `{d['imap_port']}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌐 *Webmail:* {d.get('webmail', '-')}\n"
+        f"⏱ *Expires:* {d.get('expires', '-')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ Akun ini *bisa kirim & terima* email nyata!"
     )
 
 
-def format_smtp_add_success(result: dict) -> str:
-    smtp_ok = "✅" if result.get("smtp_ok") else "❌"
-    imap_ok = "✅" if result.get("imap_ok") else "⚠️"
+def fmt_cpanel_fail(result: dict) -> str:
+    setup_needed = result.get("setup_needed", False)
+    if setup_needed:
+        return (
+            f"⚠️ *cPanel Belum Dikonfigurasi*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Untuk generate SMTP real, kamu perlu setup hosting gratis dulu.\n\n"
+            f"Tekan tombol *Setup cPanel* di menu utama untuk panduan lengkap."
+        )
+    return (
+        f"❌ *Gagal Buat Email cPanel*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ *Error:* {result.get('error', 'Unknown')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Coba cek konfigurasi cPanel di GitHub Secrets."
+    )
+
+
+def fmt_tempmail(result: dict) -> str:
+    if not result["success"]:
+        return f"❌ *Gagal generate:* {result.get('error', 'Unknown')}"
+    d = result["data"]
+    return (
+        f"📧 *Email Sementara*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📬 *Email:* `{d['email']}`\n"
+        f"⏱ *Expires:* {d.get('expires', '-')}\n"
+        f"🔗 *Cek inbox:* {d.get('note', '-')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ *Ini hanya untuk MENERIMA email*\n"
+        f"Untuk kirim email, gunakan menu ⚡ *Generate SMTP Real*"
+    )
+
+
+def fmt_smtp_add_ok(r: dict) -> str:
+    smtp_ok = "✅" if r.get("smtp_ok") else "❌"
+    imap_ok = "✅" if r.get("imap_ok") else "⚠️"
     return (
         f"✅ *SMTP Berhasil Ditambahkan!*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📧 *Email:* `{result['email']}`\n"
+        f"📧 *Email:* `{r['email']}`\n"
+        f"📤 *SMTP:* `{r['smtp_host']}:{r['smtp_port']}`  {smtp_ok}\n"
+        f"📥 *IMAP:* `{r['imap_host']}:993`  {imap_ok}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📤 *SMTP Host:* `{result['smtp_host']}`\n"
-        f"🔌 *SMTP Port:* `{result['smtp_port']}`\n"
-        f"{smtp_ok} *SMTP Terverifikasi:* Ya\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📥 *IMAP Host:* `{result['imap_host']}`\n"
-        f"🔌 *IMAP Port:* 993\n"
-        f"{imap_ok} *IMAP:* {'Terverifikasi' if result.get('imap_ok') else 'Tidak tersedia'}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💾 Akun tersimpan dan siap digunakan!"
+        f"💾 Tersimpan & siap digunakan!"
     )
 
 
-def format_smtp_add_fail(result: dict) -> str:
+def fmt_smtp_add_fail(r: dict) -> str:
     return (
-        f"❌ *SMTP Gagal Ditambahkan!*\n"
+        f"❌ *SMTP Gagal Ditambahkan*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔴 *Langkah gagal:* {result.get('step', 'Validasi')}\n"
-        f"⚠️ *Error:* {result.get('error', 'Unknown')}\n"
-        f"🌐 *Host dicoba:* `{result.get('tried_host', '-')}`\n"
+        f"🔴 Gagal di: {r.get('step', 'Validasi')}\n"
+        f"⚠️ Error: {r.get('error', 'Unknown')}\n"
+        f"🌐 Host: `{r.get('tried_host', '-')}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 *Tips:*\n"
-        f"{result.get('hint', 'Pastikan email & password benar')}\n\n"
-        f"Untuk Gmail → pakai *App Password* bukan password biasa:\n"
-        f"👉 myaccount\\.google\\.com/apppasswords"
+        f"💡 {r.get('hint', 'Pastikan email & password benar')}\n\n"
+        f"Gmail → pakai App Password:\n"
+        f"myaccount.google.com/apppasswords"
     )
 
 
 # ── Command Handlers ──────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cpanel_ok  = cpanel_configured()
+    mode_label = f"✅ cPanel aktif: `{CPANEL_DOMAIN}`" if cpanel_ok else "⚠️ cPanel belum setup"
     await update.message.reply_text(
-        "🤖 *SMTP Generator Bot*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Bot untuk generate email sementara & kelola akun SMTP nyata\\.\n\n"
-        "📧 *Email Temp* — untuk menerima pesan \\(gratis, sekali pakai\\)\n"
-        "📤 *SMTP Real* — tambah Gmail/Yahoo dengan App Password \\(untuk kirim\\)\n\n"
-        "Pilih menu di bawah:",
+        f"🤖 *SMTP Generator Bot*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔧 Mode: {mode_label}\n\n"
+        f"⚡ *SMTP Real* — email yang bisa kirim & terima \\(via cPanel\\)\n"
+        f"📧 *Email Temp* — hanya untuk menerima \\(web only\\)\n"
+        f"➕ *SMTP Manual* — tambah Gmail/Yahoo dengan App Password\n\n"
+        f"Pilih menu di bawah:",
         parse_mode="MarkdownV2",
         reply_markup=main_menu_keyboard(),
     )
 
 
 async def cmd_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate email temp (receive-only)."""
     msg = await update.message.reply_text("⏳ Generate email sementara...")
     result = await asyncio.to_thread(generator.generate_random)
     await msg.edit_text(
-        format_tempmail_result(result),
-        parse_mode="Markdown",
+        fmt_tempmail(result), parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Generate Lagi",       callback_data="gen")],
-            [InlineKeyboardButton("➕ Tambah SMTP Real",     callback_data="add_smtp_info")],
-            [InlineKeyboardButton("🏠 Menu Utama",          callback_data="back_main")],
+            [InlineKeyboardButton("🔄 Generate Lagi",         callback_data="gen")],
+            [InlineKeyboardButton("⚡ Coba Generate SMTP Real", callback_data="cpanel_gen")],
+            [InlineKeyboardButton("🏠 Menu Utama",            callback_data="back_main")],
         ]),
     )
 
 
-async def cmd_addsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /addsmtp email@gmail.com|app_password
-    atau  /addsmtp email@gmail.com | app_password
-    """
-    args_raw = " ".join(context.args).strip() if context.args else ""
-
-    # Pisah dengan | atau spasi+|+spasi
-    if "|" in args_raw:
-        parts = args_raw.split("|", 1)
+async def cmd_cpanel_gen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate email SMTP real via cPanel."""
+    msg = await update.message.reply_text("⏳ Membuat akun email real via cPanel...")
+    result = await asyncio.to_thread(cpanel_create)
+    if result["success"]:
+        text = fmt_cpanel_success(result)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Generate Lagi",    callback_data="cpanel_gen")],
+            [InlineKeyboardButton("📂 Lihat Semua Akun", callback_data="cpanel_list")],
+            [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
+        ])
     else:
+        text = fmt_cpanel_fail(result)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔧 Panduan Setup", callback_data="cpanel_setup")],
+            [InlineKeyboardButton("🏠 Menu Utama",    callback_data="back_main")],
+        ])
+    await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cmd_addsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args_raw = " ".join(context.args).strip() if context.args else ""
+    if "|" not in args_raw:
         await update.message.reply_text(
-            "➕ *Tambah Akun SMTP Real*\n"
+            "➕ *Tambah SMTP Manual*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Format perintah:\n"
-            "`/addsmtp email@gmail.com|app_password`\n\n"
+            "Format: `/addsmtp email|password`\n\n"
             "Contoh Gmail:\n"
             "`/addsmtp john@gmail.com|abcd efgh ijkl mnop`\n\n"
-            "💡 *Cara dapat App Password Gmail:*\n"
-            "1\\. Buka myaccount\\.google\\.com/apppasswords\n"
-            "2\\. Pilih *Mail* → *Other*\n"
-            "3\\. Salin 16 karakter yang muncul",
-            parse_mode="MarkdownV2",
+            "💡 Gmail App Password:\n"
+            "myaccount.google.com/apppasswords",
+            parse_mode="Markdown",
         )
         return
-
+    parts    = args_raw.split("|", 1)
     email    = parts[0].strip()
     password = parts[1].strip()
-
     if not email or not password:
-        await update.message.reply_text("⚠️ Format salah. Gunakan: `/addsmtp email|password`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Format: `/addsmtp email|password`", parse_mode="Markdown")
         return
 
-    msg = await update.message.reply_text(
-        f"🔄 *Memverifikasi koneksi SMTP...*\n"
-        f"📧 `{email}`\n"
-        f"⏳ Mohon tunggu\\.\\.\\.",
-        parse_mode="MarkdownV2",
-    )
-
+    msg = await update.message.reply_text(f"🔄 Verifikasi SMTP `{email}`...", parse_mode="Markdown")
     result = await asyncio.to_thread(manager.add_account, email, password)
-
-    if result["success"]:
-        await msg.edit_text(
-            format_smtp_add_success(result),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Lihat Semua Akun", callback_data="list_smtp")],
-                [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
-            ]),
-        )
-    else:
-        await msg.edit_text(
-            format_smtp_add_fail(result),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Coba Lagi",  callback_data="add_smtp_info")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
-            ]),
-        )
+    text   = fmt_smtp_add_ok(result) if result["success"] else fmt_smtp_add_fail(result)
+    kb     = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📂 Lihat Akun", callback_data="list_smtp")],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+    ])
+    await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def cmd_listsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     accounts = manager.list_accounts()
     if not accounts:
-        await update.message.reply_text(
-            "📭 *Belum ada akun SMTP tersimpan.*\n\n"
-            "Tambah akun dengan perintah:\n"
-            "`/addsmtp email@gmail.com|app_password`",
-            parse_mode="Markdown",
-        )
-        return
-
-    lines = ["📂 *Daftar Akun SMTP Tersimpan*\n━━━━━━━━━━━━━━━━━━━━"]
-    for i, acc in enumerate(accounts, 1):
-        ok = "✅" if acc["verified"] else "⚠️"
-        lines.append(f"{i}\\. {ok} `{acc['email']}`\n   🌐 {acc['smtp_host']}:{acc['smtp_port']}")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"Total: {len(accounts)} akun")
-
-    await update.message.reply_text(
-        "\n".join(lines), parse_mode="MarkdownV2",
+        text = "📭 *Belum ada akun SMTP manual.*\n\nTambah: `/addsmtp email|password`"
+    else:
+        lines = ["📂 *Akun SMTP Manual*\n━━━━━━━━━━━━━━━━━━━━"]
+        for i, a in enumerate(accounts, 1):
+            ok = "✅" if a["verified"] else "⚠️"
+            lines.append(f"{i}. {ok} `{a['email']}`")
+        lines.append(f"\nTotal: {len(accounts)} akun")
+        text = "\n".join(lines)
+    await update.message.reply_text(text, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Tambah Akun Baru", callback_data="add_smtp_info")],
-            [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
-        ]),
-    )
+            [InlineKeyboardButton("➕ Tambah", callback_data="add_smtp_info")],
+            [InlineKeyboardButton("🔙 Menu",   callback_data="back_main")],
+        ]))
 
 
 async def cmd_delsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     email = " ".join(context.args).strip() if context.args else ""
     if not email:
-        await update.message.reply_text(
-            "Format: `/delsmtp email@gmail.com`", parse_mode="Markdown"
-        )
+        await update.message.reply_text("Format: `/delsmtp email@domain.com`", parse_mode="Markdown")
         return
     result = manager.remove_account(email)
-    if result["success"]:
-        await update.message.reply_text(f"✅ Akun `{email}` berhasil dihapus.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"❌ {result['error']}", parse_mode="Markdown")
+    icon   = "✅" if result["success"] else "❌"
+    msg    = f"{icon} `{email}` {'dihapus.' if result['success'] else result['error']}"
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cpanel_ok = cpanel_configured()
+    cp_status = f"✅ Aktif (`{CPANEL_DOMAIN}`)" if cpanel_ok else "⚠️ Belum setup"
     await update.message.reply_text(
         f"📊 *Status Bot*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🟢 *Status:* Online\n"
-        f"⏰ *Waktu:* {now_utc()}\n"
-        f"🆔 *Run ID:* `{RUN_ID}`\n"
-        f"📦 *Repo:* `{REPO}`\n"
-        f"🔧 *Provider Temp:* {len(generator.list_providers())}\n"
-        f"📂 *Akun SMTP Real:* {manager.count()}\n"
+        f"🟢 Bot: Online\n"
+        f"⏰ Waktu: {now_utc()}\n"
+        f"🆔 Run ID: `{RUN_ID}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔧 cPanel: {cp_status}\n"
+        f"📧 Provider Temp: {len(generator.list_providers())}\n"
+        f"📂 Akun Manual: {manager.count()}\n"
         f"━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
     )
@@ -272,25 +287,48 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "❓ *Panduan SMTP Generator Bot*\n"
+        "❓ *Panduan Bot*\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📧 *1\\. Email Sementara \\(Receive Only\\)*\n"
-        "Gunakan /generate atau tombol menu\\.\n"
-        "Email ini HANYA untuk *menerima* pesan\\.\n"
-        "Tidak bisa login SMTP/IMAP dengan password random\\.\n\n"
-        "📤 *2\\. SMTP Real \\(Kirim & Terima\\)*\n"
-        "`/addsmtp email@gmail.com|app_password`\n"
-        "Bot akan verifikasi koneksi sebelum menyimpan\\.\n\n"
+        "⚡ *Generate SMTP Real* \\(cPanel\\)\n"
+        "Buat email nyata yg bisa kirim & terima\n"
+        "Butuh setup cPanel dulu \\(lihat /cpanelsetup\\)\n\n"
+        "📧 *Email Temp* \\(Receive Only\\)\n"
+        "Langsung generate, tapi hanya untuk menerima\n\n"
+        "➕ *SMTP Manual*\n"
+        "`/addsmtp email|app_password`\n"
+        "Tambah Gmail/Yahoo, diverifikasi otomatis\n\n"
         "📋 *Commands:*\n"
-        "/start     — Menu utama\n"
-        "/generate  — Generate email temp\n"
-        "/addsmtp   — Tambah akun SMTP real\n"
-        "/listsmtp  — Lihat akun tersimpan\n"
-        "/delsmtp   — Hapus akun\n"
-        "/status    — Status bot\n\n"
-        "💡 *Gmail App Password:*\n"
-        "myaccount\\.google\\.com/apppasswords\n"
-        "━━━━━━━━━━━━━━━━━━━━",
+        "/start — Menu utama\n"
+        "/generate — Email temp\n"
+        "/cpanelgen — Generate SMTP real\n"
+        "/addsmtp — Tambah SMTP manual\n"
+        "/listsmtp — Lihat akun manual\n"
+        "/delsmtp — Hapus akun manual\n"
+        "/cpanelsetup — Panduan setup hosting\n"
+        "/status — Status bot",
+        parse_mode="MarkdownV2",
+    )
+
+
+async def cmd_cpanel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔧 *Panduan Setup Hosting Gratis \\(InfinityFree\\)*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "*Langkah 1: Daftar InfinityFree*\n"
+        "👉 infinityfree\\.net → Sign Up \\(gratis\\)\n\n"
+        "*Langkah 2: Buat Hosting Account*\n"
+        "• Pilih subdomain bebas, misal: `namakamu\\.epizy\\.com`\n"
+        "• Hosting gratis, tidak perlu kartu kredit\n\n"
+        "*Langkah 3: Catat Kredensial cPanel*\n"
+        "• cPanel URL: `https://cpanel\\.epizy\\.com` \\(atau yang dikasih\\)\n"
+        "• Username & password cPanel\n"
+        "• Domain: `namakamu\\.epizy\\.com`\n\n"
+        "*Langkah 4: Set GitHub Secrets*\n"
+        "Buka repo → Settings → Secrets → Actions:\n"
+        "```\nCPANEL_URL    = https://cpanel.epizy.com\nCPANEL_USER   = username_cpanel\nCPANEL_PASS   = password_cpanel\nCPANEL_DOMAIN = namakamu.epizy.com\n```\n\n"
+        "*Langkah 5: Restart Bot*\n"
+        "Actions → 🤖 SMTP Generator Bot → Run workflow\n\n"
+        "✅ Bot siap generate SMTP real\\!",
         parse_mode="MarkdownV2",
     )
 
@@ -299,26 +337,81 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data
+    data  = query.data
 
-    if data == "gen":
+    if data == "cpanel_gen":
+        await query.edit_message_text("⏳ Membuat akun email real via cPanel...")
+        result = await asyncio.to_thread(cpanel_create)
+        if result["success"]:
+            text = fmt_cpanel_success(result)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚡ Generate Lagi",    callback_data="cpanel_gen")],
+                [InlineKeyboardButton("📂 Lihat Semua Akun", callback_data="cpanel_list")],
+                [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
+            ])
+        else:
+            text = fmt_cpanel_fail(result)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔧 Panduan Setup", callback_data="cpanel_setup")],
+                [InlineKeyboardButton("🏠 Menu Utama",    callback_data="back_main")],
+            ])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "cpanel_list":
+        result = await asyncio.to_thread(cpanel_list)
+        if not result["success"]:
+            text = f"❌ {result['error']}"
+        elif not result["accounts"]:
+            text = f"📭 Belum ada email di cPanel `{result.get('domain', '')}`"
+        else:
+            lines = [f"📂 *Email di cPanel ({result['domain']})*\n━━━━━━━━━━━━━━━━━━━━"]
+            for i, acc in enumerate(result["accounts"], 1):
+                email  = acc.get("email", acc.get("login", "?"))
+                quota  = acc.get("_diskquota", acc.get("quota", "?"))
+                lines.append(f"{i}. `{email}` \\({quota} MB\\)")
+            lines.append(f"\nTotal: {result['count']} akun")
+            text = "\n".join(lines)
+        await query.edit_message_text(
+            text, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚡ Generate Baru", callback_data="cpanel_gen")],
+                [InlineKeyboardButton("🔙 Menu Utama",   callback_data="back_main")],
+            ]),
+        )
+
+    elif data == "cpanel_setup":
+        await query.edit_message_text(
+            "🔧 *Setup Hosting Gratis \\(InfinityFree\\)*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "*1\\.* Daftar di infinityfree\\.net \\(gratis\\)\n"
+            "*2\\.* Buat hosting → dapat subdomain `.epizy.com`\n"
+            "*3\\.* Catat: cPanel URL, username, password, domain\n"
+            "*4\\.* Set 4 GitHub Secrets:\n"
+            "`CPANEL_URL` `CPANEL_USER` `CPANEL_PASS` `CPANEL_DOMAIN`\n"
+            "*5\\.* Restart bot di GitHub Actions\n\n"
+            "Ketik /cpanelsetup untuk panduan lengkap\\.".replace(".", "\\."),
+            parse_mode="MarkdownV2",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]]),
+        )
+
+    elif data == "gen":
         await query.edit_message_text("⏳ Generate email sementara...")
         result = await asyncio.to_thread(generator.generate_random)
         await query.edit_message_text(
-            format_tempmail_result(result),
-            parse_mode="Markdown",
+            fmt_tempmail(result), parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Generate Lagi",   callback_data="gen")],
-                [InlineKeyboardButton("➕ Tambah SMTP Real", callback_data="add_smtp_info")],
-                [InlineKeyboardButton("🏠 Menu Utama",      callback_data="back_main")],
+                [InlineKeyboardButton("🔄 Generate Lagi",          callback_data="gen")],
+                [InlineKeyboardButton("⚡ Generate SMTP Real",     callback_data="cpanel_gen")],
+                [InlineKeyboardButton("🏠 Menu Utama",             callback_data="back_main")],
             ]),
         )
 
     elif data == "menu_provider":
         await query.edit_message_text(
-            "🔧 *Pilih Provider Email Sementara:*",
-            parse_mode="Markdown",
-            reply_markup=provider_keyboard(),
+            "🔧 *Pilih Provider Email Temp:*",
+            parse_mode="Markdown", reply_markup=provider_keyboard(),
         )
 
     elif data.startswith("prov_"):
@@ -326,28 +419,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"⏳ Generate dari *{provider}*...", parse_mode="Markdown")
         result = await asyncio.to_thread(generator.generate_by_provider, provider)
         await query.edit_message_text(
-            format_tempmail_result(result),
-            parse_mode="Markdown",
+            fmt_tempmail(result), parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Generate Lagi",       callback_data=f"prov_{provider}")],
-                [InlineKeyboardButton("📋 Ganti Provider",      callback_data="menu_provider")],
-                [InlineKeyboardButton("🏠 Menu Utama",          callback_data="back_main")],
+                [InlineKeyboardButton("🔄 Generate Lagi",  callback_data=f"prov_{provider}")],
+                [InlineKeyboardButton("📋 Ganti Provider", callback_data="menu_provider")],
+                [InlineKeyboardButton("🏠 Menu Utama",     callback_data="back_main")],
             ]),
         )
 
     elif data == "add_smtp_info":
         await query.edit_message_text(
-            "➕ *Tambah Akun SMTP Real*\n"
+            "➕ *Tambah SMTP Manual*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Kirim perintah berikut di chat:\n\n"
+            "Kirim di chat:\n"
             "`/addsmtp email@gmail.com|app_password`\n\n"
-            "📌 *Contoh Gmail:*\n"
-            "`/addsmtp john@gmail.com|abcd efgh ijkl mnop`\n\n"
-            "💡 *Cara dapat App Password Gmail:*\n"
-            "1. Buka myaccount.google.com/apppasswords\n"
-            "2. Pilih *Mail* → *Other (Custom name)*\n"
-            "3. Generate → salin 16 karakter\n\n"
-            "✅ Bot akan verifikasi koneksi sebelum menyimpan.",
+            "📌 Gmail App Password:\n"
+            "myaccount.google.com/apppasswords\n\n"
+            "✅ Bot verifikasi koneksi sebelum simpan.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
@@ -357,42 +445,38 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "list_smtp":
         accounts = manager.list_accounts()
         if not accounts:
-            text = (
-                "📭 *Belum ada akun SMTP tersimpan.*\n\n"
-                "Tambah dengan: `/addsmtp email|password`"
-            )
+            text = "📭 *Belum ada akun SMTP manual.*\n\nTambah: `/addsmtp email|password`"
         else:
-            lines = ["📂 *Akun SMTP Tersimpan*\n━━━━━━━━━━━━━━━━━━━━"]
-            for i, acc in enumerate(accounts, 1):
-                ok = "✅" if acc["verified"] else "⚠️"
-                lines.append(f"{i}. {ok} `{acc['email']}`\n   🌐 {acc['smtp_host']}:{acc['smtp_port']}")
-            lines.append(f"\n━━━━━━━━━━━━━━━━━━━━\nTotal: {len(accounts)} akun")
+            lines = ["📂 *Akun SMTP Manual*\n━━━━━━━━━━━━━━━━━━━━"]
+            for i, a in enumerate(accounts, 1):
+                ok = "✅" if a["verified"] else "⚠️"
+                lines.append(f"{i}. {ok} `{a['email']}`\n   🌐 {a['smtp_host']}:{a['smtp_port']}")
+            lines.append(f"\nTotal: {len(accounts)}")
             text = "\n".join(lines)
-
         await query.edit_message_text(
             text, parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Tambah Baru", callback_data="add_smtp_info")],
-                [InlineKeyboardButton("🔙 Kembali",    callback_data="back_main")],
+                [InlineKeyboardButton("🔙 Kembali",     callback_data="back_main")],
             ]),
         )
 
     elif data == "howto":
         await query.edit_message_text(
-            "📖 *Perbedaan Email Temp vs SMTP Real*\n"
+            "📖 *Perbedaan Mode Generate*\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📧 *Email Sementara (Generate)*\n"
-            "• Gratis, langsung jadi\n"
-            "• Hanya bisa MENERIMA email\n"
-            "• Cek inbox via website provider\n"
-            "• Tidak bisa login SMTP/IMAP\n\n"
-            "📤 *SMTP Real (Tambah Akun)*\n"
-            "• Pakai Gmail/Yahoo dengan App Password\n"
+            "⚡ *SMTP Real (cPanel)* — TERBAIK\n"
+            "• Email nyata di domain hosting kamu\n"
             "• Bisa KIRIM & TERIMA email\n"
-            "• Terverifikasi sebelum disimpan\n"
-            "• Aman – menggunakan koneksi TLS\n\n"
-            "💡 Gmail App Password:\n"
-            "myaccount.google.com/apppasswords",
+            "• Butuh setup InfinityFree (gratis)\n\n"
+            "📧 *Email Temp* — Receive Only\n"
+            "• Langsung jadi, tidak perlu setup\n"
+            "• Hanya bisa MENERIMA via website\n"
+            "• Tidak bisa login SMTP/IMAP\n\n"
+            "➕ *SMTP Manual* — Akun Sendiri\n"
+            "• Masukkan Gmail + App Password\n"
+            "• Diverifikasi sebelum disimpan\n"
+            "• Bisa KIRIM & TERIMA",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
@@ -400,15 +484,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "status":
+        cpanel_ok = cpanel_configured()
+        cp_status = f"✅ Aktif (`{CPANEL_DOMAIN}`)" if cpanel_ok else "⚠️ Belum setup"
         await query.edit_message_text(
             f"📊 *Status Bot*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🟢 Status: Online\n"
-            f"⏰ Waktu: {now_utc()}\n"
+            f"🟢 Bot: Online\n"
+            f"⏰ {now_utc()}\n"
             f"🆔 Run ID: `{RUN_ID}`\n"
-            f"🔧 Provider Temp: {len(generator.list_providers())}\n"
-            f"📂 Akun SMTP Real: {manager.count()}\n"
-            f"━━━━━━━━━━━━━━━━━━━━",
+            f"🔧 cPanel: {cp_status}\n"
+            f"📧 Provider Temp: {len(generator.list_providers())}\n"
+            f"📂 Akun Manual: {manager.count()}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
@@ -416,10 +502,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "back_main":
+        cpanel_ok  = cpanel_configured()
+        mode_label = f"✅ cPanel: `{CPANEL_DOMAIN}`" if cpanel_ok else "⚠️ cPanel belum setup"
         await query.edit_message_text(
-            "🤖 *SMTP Generator Bot*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Pilih menu di bawah:",
+            f"🤖 *SMTP Generator Bot*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔧 {mode_label}\n\n"
+            f"Pilih menu:",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(),
         )
@@ -428,8 +517,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Startup Notification ───────────────────────────────────────────────────────
 async def send_startup_notification(bot: Bot):
     if not ADMIN_CHAT:
-        logger.warning("TELEGRAM_CHAT_ID tidak diset, skip notifikasi startup.")
         return
+    cpanel_ok = cpanel_configured()
+    cp_info   = f"✅ cPanel aktif (`{CPANEL_DOMAIN}`)" if cpanel_ok else "⚠️ cPanel belum setup"
     try:
         await bot.send_message(
             chat_id=ADMIN_CHAT,
@@ -439,47 +529,48 @@ async def send_startup_notification(bot: Bot):
                 f"⏰ *Waktu:* {now_utc()}\n"
                 f"🆔 *Run ID:* `{RUN_ID}`\n"
                 f"📦 *Repo:* `{REPO}`\n"
-                f"🔧 *Provider Temp:* {len(generator.list_providers())}\n"
-                f"📂 *Akun SMTP Real:* {manager.count()}\n"
+                f"🔧 {cp_info}\n"
+                f"📧 Provider Temp: {len(generator.list_providers())}\n"
+                f"📂 Akun Manual: {manager.count()}\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
                 "✅ Bot siap menerima perintah!"
             ),
             parse_mode="Markdown",
         )
-        logger.info("Startup notification terkirim.")
     except Exception as e:
-        logger.error(f"Gagal kirim notifikasi startup: {e}")
+        logger.error(f"Notif startup gagal: {e}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start",    cmd_start))
-    app.add_handler(CommandHandler("generate", cmd_generate))
-    app.add_handler(CommandHandler("addsmtp",  cmd_addsmtp))
-    app.add_handler(CommandHandler("listsmtp", cmd_listsmtp))
-    app.add_handler(CommandHandler("delsmtp",  cmd_delsmtp))
-    app.add_handler(CommandHandler("status",   cmd_status))
-    app.add_handler(CommandHandler("help",     cmd_help))
+    app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("generate",    cmd_generate))
+    app.add_handler(CommandHandler("cpanelgen",   cmd_cpanel_gen))
+    app.add_handler(CommandHandler("addsmtp",     cmd_addsmtp))
+    app.add_handler(CommandHandler("listsmtp",    cmd_listsmtp))
+    app.add_handler(CommandHandler("delsmtp",     cmd_delsmtp))
+    app.add_handler(CommandHandler("status",      cmd_status))
+    app.add_handler(CommandHandler("help",        cmd_help))
+    app.add_handler(CommandHandler("cpanelsetup", cmd_cpanel_setup))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     async def post_init(application: Application):
         await send_startup_notification(application.bot)
-        # Set bot commands
-        from telegram import BotCommand
         await application.bot.set_my_commands([
-            BotCommand("start",    "Menu utama"),
-            BotCommand("generate", "Generate email sementara"),
-            BotCommand("addsmtp",  "Tambah akun SMTP real"),
-            BotCommand("listsmtp", "Daftar akun SMTP tersimpan"),
-            BotCommand("delsmtp",  "Hapus akun SMTP"),
-            BotCommand("status",   "Status bot"),
-            BotCommand("help",     "Bantuan"),
+            BotCommand("start",       "Menu utama"),
+            BotCommand("cpanelgen",   "⚡ Generate SMTP real (cPanel)"),
+            BotCommand("generate",    "📧 Email sementara (receive only)"),
+            BotCommand("addsmtp",     "➕ Tambah SMTP manual"),
+            BotCommand("listsmtp",    "📂 Lihat akun SMTP"),
+            BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
+            BotCommand("cpanelsetup", "🔧 Panduan setup hosting gratis"),
+            BotCommand("status",      "📊 Status bot"),
+            BotCommand("help",        "❓ Bantuan"),
         ])
 
     app.post_init = post_init
-
     logger.info("Bot mulai polling...")
     app.run_polling(drop_pending_updates=True)
 

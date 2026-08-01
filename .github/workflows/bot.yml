@@ -1,7 +1,7 @@
 name: 🤖 SMTP Generator Bot
 
 on:
-  workflow_dispatch:         # trigger manual atau dari keepalive
+  workflow_dispatch:
   push:
     branches: [ main ]
     paths:
@@ -11,20 +11,18 @@ on:
 
 concurrency:
   group: smtp-bot-runner
-  cancel-in-progress: true   # hentikan run lama saat ada run baru
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     name: Run Telegram Bot
     runs-on: ubuntu-latest
-    timeout-minutes: 330     # ~5,5 jam (keepalive akan restart sebelum 6 jam)
+    timeout-minutes: 330
 
     steps:
-      # ── Checkout ────────────────────────────────────────────────────────────
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      # ── Python setup ────────────────────────────────────────────────────────
       - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -34,20 +32,22 @@ jobs:
       - name: 📦 Install dependencies
         run: pip install -r requirements.txt
 
-      # ── Run bot ─────────────────────────────────────────────────────────────
       - name: 🚀 Run Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_RUN_ID:      ${{ github.run_id }}
           GITHUB_REPOSITORY:  ${{ github.repository }}
+          # ── cPanel (opsional – untuk generate SMTP real) ──────────────────
+          CPANEL_URL:         ${{ secrets.CPANEL_URL }}
+          CPANEL_USER:        ${{ secrets.CPANEL_USER }}
+          CPANEL_PASS:        ${{ secrets.CPANEL_PASS }}
+          CPANEL_DOMAIN:      ${{ secrets.CPANEL_DOMAIN }}
         run: |
           echo "✅ Bot starting at $(date -u)"
           cd bot
           python main.py
-        continue-on-error: false
 
-      # ── Notif jika bot berhenti tidak terduga ───────────────────────────────
       - name: 🔔 Notify if bot crashed
         if: failure()
         env:
