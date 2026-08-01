@@ -47,6 +47,26 @@ PROVIDER_PRESETS = {
     },
 }
 
+# ─── Mailtrap & Mailpit presets ───────────────────────────────────────────────
+MAILTRAP_PRESET = {
+    "smtp_host": "sandbox.smtp.mailtrap.io",
+    "smtp_port": 2525,
+    "imap_host": "sandbox.imap.mailtrap.io",
+    "imap_port": 993,
+    "provider":  "Mailtrap",
+    "note":      "Dapatkan credentials di mailtrap.io → Inboxes → SMTP Settings",
+}
+
+# Mailpit default — bisa di-override user dengan host:port sendiri
+MAILPIT_DEFAULT = {
+    "smtp_host": "localhost",
+    "smtp_port": 1025,
+    "imap_host": "localhost",
+    "imap_port": 1143,
+    "provider":  "Mailpit",
+    "note":      "Mailpit self-hosted – no auth by default",
+}
+
 DEFAULT_PRESET = {
     "smtp_host": "smtp.{domain}",
     "smtp_port": 587,
@@ -74,6 +94,29 @@ def get_preset(email: str) -> dict:
         if isinstance(val, str):
             preset[key] = val.replace("{domain}", domain)
     return preset
+
+
+def verify_smtp_plain(host: str, port: int, username: str, password: str, timeout: int = 10) -> dict:
+    """Coba koneksi SMTP tanpa perlu email — untuk Mailtrap/Mailpit."""
+    try:
+        server = smtplib.SMTP(host, port, timeout=timeout)
+        server.ehlo()
+        # Coba STARTTLS dulu, kalau gagal coba plain
+        try:
+            server.starttls()
+            server.ehlo()
+        except Exception:
+            pass
+        if username and password:
+            server.login(username, password)
+        server.quit()
+        return {"success": True, "method": "SMTP"}
+    except smtplib.SMTPAuthenticationError:
+        return {"success": False, "error": "Login ditolak. Periksa username/password."}
+    except smtplib.SMTPConnectError as e:
+        return {"success": False, "error": f"Tidak bisa connect ke {host}:{port} – {e}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def verify_smtp(email: str, password: str, host: str, port: int, timeout: int = 10) -> dict:
@@ -180,6 +223,99 @@ class SMTPManager:
             "imap_host": preset["imap_host"],
             "imap_port": preset["imap_port"],
             "note":     preset.get("note", ""),
+        }
+
+    def add_mailtrap(self, username: str, password: str) -> dict:
+        """Tambah akun Mailtrap SMTP (sandbox testing)."""
+        username = username.strip()
+        password = password.strip()
+        if not username or not password:
+            return {"success": False, "error": "Username dan password tidak boleh kosong."}
+
+        preset = MAILTRAP_PRESET.copy()
+        host, port = preset["smtp_host"], preset["smtp_port"]
+
+        smtp_result = verify_smtp_plain(host, port, username, password)
+        if not smtp_result["success"]:
+            return {
+                "success": False,
+                "step": "SMTP",
+                "error": smtp_result["error"],
+                "hint": preset["note"],
+                "tried_host": f"{host}:{port}",
+            }
+
+        # Simpan dengan key = username (bukan email)
+        key = f"mailtrap:{username}"
+        data = _load()
+        data[key] = {
+            "password":   password,
+            "username":   username,
+            "provider":   "Mailtrap",
+            "smtp_host":  host,
+            "smtp_port":  port,
+            "imap_host":  preset["imap_host"],
+            "imap_port":  preset["imap_port"],
+            "verified":   True,
+            "imap_ok":    True,
+        }
+        _save(data)
+
+        return {
+            "success":   True,
+            "email":     key,
+            "smtp_ok":   True,
+            "imap_ok":   True,
+            "smtp_host": host,
+            "smtp_port": port,
+            "imap_host": preset["imap_host"],
+            "imap_port": preset["imap_port"],
+            "note":      preset["note"],
+        }
+
+    def add_mailpit(self, host: str, port: int, username: str = "", password: str = "") -> dict:
+        """Tambah akun Mailpit SMTP (self-hosted testing)."""
+        host     = host.strip()
+        username = username.strip()
+        password = password.strip()
+        if not host:
+            return {"success": False, "error": "Host tidak boleh kosong."}
+
+        smtp_result = verify_smtp_plain(host, port, username, password)
+        if not smtp_result["success"]:
+            return {
+                "success": False,
+                "step": "SMTP",
+                "error": smtp_result["error"],
+                "hint": f"Pastikan Mailpit berjalan di {host}:{port}",
+                "tried_host": f"{host}:{port}",
+            }
+
+        key = f"mailpit:{host}:{port}"
+        data = _load()
+        data[key] = {
+            "password":   password,
+            "username":   username,
+            "provider":   "Mailpit",
+            "smtp_host":  host,
+            "smtp_port":  port,
+            "imap_host":  host,
+            "imap_port":  MAILPIT_DEFAULT["imap_port"],
+            "verified":   True,
+            "imap_ok":    False,
+        }
+        _save(data)
+
+        return {
+            "success":   True,
+            "email":     key,
+            "smtp_ok":   True,
+            "imap_ok":   False,
+            "smtp_host": host,
+            "smtp_port": port,
+            "imap_host": host,
+            "imap_port": MAILPIT_DEFAULT["imap_port"],
+            "note":      f"Mailpit di {host}:{port}",
         }
 
     def remove_account(self, email: str) -> dict:
