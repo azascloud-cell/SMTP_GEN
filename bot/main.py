@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
@@ -11,6 +12,14 @@ from telegram.ext import (
 )
 from smtp_generator import SMTPGenerator
 from smtp_manager import SMTPManager
+from whatsapp_fix import (
+    send_appeal_email,
+    check_whatsapp_reply,
+    add_pending,
+    remove_pending,
+    get_all_pending,
+    mark_notified,
+)
 from cpanel_generator import (
     create_email as cpanel_create,
     delete_email as cpanel_delete,
@@ -54,6 +63,7 @@ def main_menu_keyboard():
     rows.append([InlineKeyboardButton("📂 Akun SMTP Manual",               callback_data="list_smtp")])
     if not cpanel_ok:
         rows.append([InlineKeyboardButton("🔧 Setup cPanel (Generate Real)", callback_data="cpanel_setup")])
+    rows.append([InlineKeyboardButton("🔧 WhatsApp Fix (/fix +nomor)", callback_data="fix_info")])
     rows.append([InlineKeyboardButton("❓ Cara Pakai",  callback_data="howto"),
                  InlineKeyboardButton("📊 Status Bot", callback_data="status")])
     return InlineKeyboardMarkup(rows)
@@ -297,6 +307,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "➕ *SMTP Manual*\n"
         "`/addsmtp email|app_password`\n"
         "Tambah Gmail/Yahoo, diverifikasi otomatis\n\n"
+        "🔧 *WhatsApp Fix*\n"
+        "`/fix +628xxxxxxxx`\n"
+        "Kirim email banding ke WhatsApp support\n"
+        "Bot monitor balasan & notif otomatis\\!\n\n"
         "📋 *Commands:*\n"
         "/start — Menu utama\n"
         "/generate — Email temp\n"
@@ -304,10 +318,163 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/addsmtp — Tambah SMTP manual\n"
         "/listsmtp — Lihat akun manual\n"
         "/delsmtp — Hapus akun manual\n"
+        "/fix — Banding ban WhatsApp\n"
         "/cpanelsetup — Panduan setup hosting\n"
         "/status — Status bot",
         parse_mode="MarkdownV2",
     )
+
+
+# ── WhatsApp Fix Command ───────────────────────────────────────────────────────
+async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kirim email banding WhatsApp ban ke support@support.whatsapp.com."""
+    phone = " ".join(context.args).strip() if context.args else ""
+
+    if not phone:
+        await update.message.reply_text(
+            "🔧 *WhatsApp Fix — Banding Ban*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Format: `/fix +628xxxxxxxx`\n\n"
+            "Contoh:\n"
+            "`/fix +6281234567890`\n"
+            "`/fix +249114757586`\n\n"
+            "📌 Bot akan:\n"
+            "1️⃣ Kirim email banding ke WhatsApp Support\n"
+            "2️⃣ Monitor inbox IMAP untuk balasan\n"
+            "3️⃣ Notifikasi kamu otomatis saat ada balasan\n\n"
+            "💡 Pastikan ada akun SMTP manual dulu: `/addsmtp`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Normalise phone
+    phone = phone.strip()
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    # Ambil akun SMTP pertama yang verified
+    accounts = manager.list_accounts()
+    verified = [a for a in accounts if a.get("verified")]
+    if not verified:
+        await update.message.reply_text(
+            "❌ *Tidak ada akun SMTP yang aktif\\!*\n\n"
+            "Tambah dulu dengan:\n"
+            "`/addsmtp email@gmail.com|app_password`\n\n"
+            "📌 Gmail App Password:\n"
+            "myaccount\\.google\\.com/apppasswords",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    smtp_email = verified[0]["email"]
+    # Ambil data lengkap (dengan password)
+    smtp_full = manager.get_account(smtp_email)
+    if not smtp_full:
+        await update.message.reply_text("❌ Gagal ambil data akun SMTP.", parse_mode="Markdown")
+        return
+
+    msg = await update.message.reply_text(
+        f"📤 *Mengirim email banding...*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Nomor: `{phone}`\n"
+        f"📧 SMTP: `{smtp_email}`\n"
+        f"🎯 Ke: `support@support.whatsapp.com`",
+        parse_mode="Markdown",
+    )
+
+    sent_at = time.time()
+    result  = await asyncio.to_thread(send_appeal_email, smtp_full, phone)
+
+    if not result["success"]:
+        await msg.edit_text(
+            f"❌ *Gagal Kirim Email Banding*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor: `{phone}`\n"
+            f"⚠️ Error: {result.get('error', 'Unknown')}\n\n"
+            f"💡 Cek App Password atau coba akun SMTP lain.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Simpan ke pending monitor
+    chat_id = update.effective_chat.id
+    key     = add_pending(chat_id, phone, smtp_email, sent_at)
+
+    await msg.edit_text(
+        f"📬 *EMAIL BANDING TERKIRIM!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Nomor : `{phone}`\n"
+        f"📧 SMTP  : `{smtp_email}`\n"
+        f"✅ Status : Banding berhasil terkirim!\n\n"
+        f"🤖 *INFO*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Bot akan monitor inbox secara otomatis.\n"
+        f"Kamu akan dinotifikasi jika ada balasan dari WhatsApp.",
+        parse_mode="Markdown",
+    )
+
+
+async def imap_monitor_loop(bot: Bot):
+    """Background loop: cek balasan WhatsApp tiap 5 menit."""
+    logger.info("IMAP monitor loop dimulai...")
+    while True:
+        try:
+            pending = get_all_pending()
+            for key, item in list(pending.items()):
+                if item.get("notified"):
+                    continue
+
+                smtp_full = manager.get_account(item["smtp_email"])
+                if not smtp_full:
+                    continue
+
+                reply = await asyncio.to_thread(
+                    check_whatsapp_reply, smtp_full, item["sent_at"]
+                )
+
+                if reply:
+                    chat_id = item["chat_id"]
+                    phone   = item["phone"]
+                    smtp_em = item["smtp_email"]
+
+                    body_preview = reply.get("body", "")[:400]
+
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                f"📬 *EMAIL DIBALAS — SUKSES!*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📱 Nomor : `{phone}`\n"
+                                f"📧 SMTP  : `{smtp_em}`\n"
+                                f"✅ Status : Banding berhasil terkirim!\n\n"
+                                f"🤖 *PESAN DARI AI ASISTEN*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"👋 Hallo, kabar gembira nih!\n\n"
+                                f"Email banding kamu sudah dibalas positif — "
+                                f"kemungkinan besar nomor kamu sudah berhasil "
+                                f"diaktifkan kembali! Coba buka WhatsApp dan "
+                                f"cek nomor kamu ya. Kalau masih ada kendala, "
+                                f"coba banding ulang dengan /fix.\n\n"
+                                f"📩 *ISI BALASAN EMAIL*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📧 SMTP Dipakai: `{smtp_em}`\n"
+                                f"📧 Dari: {reply.get('from', '-')}\n"
+                                f"📌 Subject: {reply.get('subject', '-')}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"{body_preview}"
+                            ),
+                            parse_mode="Markdown",
+                        )
+                        mark_notified(key)
+                        logger.info(f"Notifikasi balasan terkirim ke {chat_id} untuk {phone}")
+                    except Exception as e:
+                        logger.error(f"Gagal kirim notif ke {chat_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"IMAP monitor error: {e}")
+
+        await asyncio.sleep(300)  # Cek tiap 5 menit
 
 
 async def cmd_testcpanel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -575,6 +742,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]]),
         )
 
+    elif data == "fix_info":
+        await query.edit_message_text(
+            "🔧 *WhatsApp Fix — Banding Ban*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Gunakan command:\n"
+            "`/fix +628xxxxxxxx`\n\n"
+            "Contoh:\n"
+            "`/fix +6281234567890`\n\n"
+            "📌 Bot akan:\n"
+            "1️⃣ Kirim email banding ke WhatsApp Support\n"
+            "2️⃣ Monitor inbox IMAP untuk balasan\n"
+            "3️⃣ Notifikasi kamu otomatis saat ada balasan\n\n"
+            "💡 Pastikan sudah ada SMTP manual: `/addsmtp`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]]),
+        )
+
     elif data == "back_main":
         cpanel_ok  = cpanel_configured()
         mode_label = f"✅ cPanel: `{CPANEL_DOMAIN}`" if cpanel_ok else "⚠️ cPanel belum setup"
@@ -629,6 +815,7 @@ def main():
     app.add_handler(CommandHandler("help",        cmd_help))
     app.add_handler(CommandHandler("cpanelsetup", cmd_cpanel_setup))
     app.add_handler(CommandHandler("testcpanel",  cmd_testcpanel))
+    app.add_handler(CommandHandler("fix",         cmd_fix))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     async def post_init(application: Application):
@@ -640,11 +827,14 @@ def main():
             BotCommand("addsmtp",     "➕ Tambah SMTP manual"),
             BotCommand("listsmtp",    "📂 Lihat akun SMTP"),
             BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
+            BotCommand("fix",         "🔧 Banding ban WhatsApp"),
             BotCommand("cpanelsetup", "🔧 Panduan setup hosting gratis"),
             BotCommand("testcpanel",  "🔍 Diagnostik DNS + panel"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),
         ])
+        # Mulai background IMAP monitor
+        asyncio.create_task(imap_monitor_loop(application.bot))
 
     app.post_init = post_init
     logger.info("Bot mulai polling...")
