@@ -1,0 +1,62 @@
+name: 🤖 SMTP Generator Bot
+
+on:
+  workflow_dispatch:         # trigger manual atau dari keepalive
+  push:
+    branches: [ main ]
+    paths:
+      - 'bot/**'
+      - 'requirements.txt'
+      - '.github/workflows/bot.yml'
+
+concurrency:
+  group: smtp-bot-runner
+  cancel-in-progress: true   # hentikan run lama saat ada run baru
+
+jobs:
+  run-bot:
+    name: Run Telegram Bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 330     # ~5,5 jam (keepalive akan restart sebelum 6 jam)
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Python setup ────────────────────────────────────────────────────────
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 📦 Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── Run bot ─────────────────────────────────────────────────────────────
+      - name: 🚀 Run Bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_RUN_ID:      ${{ github.run_id }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+        run: |
+          echo "✅ Bot starting at $(date -u)"
+          cd bot
+          python main.py
+        continue-on-error: false
+
+      # ── Notif jika bot berhenti tidak terduga ───────────────────────────────
+      - name: 🔔 Notify if bot crashed
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              -d parse_mode="Markdown" \
+              -d text="⚠️ *Bot SMTP Generator Berhenti!*%0A━━━━━━━━━━━━━━━━━━━━%0A🔴 Status: Crashed / Error%0A⏰ Waktu: $(date -u '+%Y-%m-%d %H:%M UTC')%0A🆔 Run ID: \`${{ github.run_id }}\`%0A%0A🔄 Keepalive akan restart otomatis sesuai jadwal."
+          fi
