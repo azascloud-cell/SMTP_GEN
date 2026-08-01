@@ -12,6 +12,10 @@ const port = process.env.PORT || 3000;
 const authDir = path.join(__dirname, 'data', 'baileys_auth');
 fs.mkdirSync(authDir, { recursive: true });
 
+// Global socket and connection state variables to avoid duplicate handler bug on reconnect
+let sock = null;
+let isConnected = false;
+
 function sendTelegramMessage(text) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -55,15 +59,18 @@ function sendTelegramMessage(text) {
 
 async function startWA() {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    const sock = makeWASocket({
+    const currentSock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: true
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    // Update global reference
+    sock = currentSock;
 
-    sock.ev.on('connection.update', (update) => {
+    currentSock.ev.on('creds.update', saveCreds);
+
+    currentSock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         if (qr) {
             console.log("=========================================");
@@ -72,12 +79,16 @@ async function startWA() {
         }
 
         if (connection === 'close') {
+            isConnected = false;
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed due to', lastDisconnect?.error, ', reconnecting:', shouldReconnect);
             if (shouldReconnect) {
-                startWA();
+                setTimeout(() => {
+                    startWA();
+                }, 3000);
             }
         } else if (connection === 'open') {
+            isConnected = true;
             console.log("WhatsApp connection is open and active!");
             sendTelegramMessage("🔗 *WhatsApp Checker: Terhubung!* ✅\nBot siap melakukan pengecekan nomor.");
         }
@@ -85,12 +96,14 @@ async function startWA() {
 
     // Handle Pairing Code via phone number
     const pairingNumber = process.env.PAIRING_PHONE_NUMBER;
-    if (pairingNumber && !sock.authState.creds.registered) {
+    if (pairingNumber && !currentSock.authState.creds.registered) {
         console.log(`Attempting pairing with: ${pairingNumber}`);
         setTimeout(async () => {
             try {
+                if (currentSock.authState.creds.registered) return;
+
                 // Request pairing code
-                const code = await sock.requestPairingCode(pairingNumber.replace(/[^\d]/g, ''));
+                const code = await currentSock.requestPairingCode(pairingNumber.replace(/[^\d]/g, ''));
                 console.log("=========================================");
                 console.log(`PAIRING CODE GENERATED: ${code}`);
                 console.log("=========================================");
@@ -106,55 +119,70 @@ async function startWA() {
             }
         }, 6000);
     }
-
-    app.get('/pair', async (req, res) => {
-        const phone = req.query.phone;
-        if (!phone) {
-            return res.status(400).json({ error: "Missing phone parameter" });
-        }
-        if (sock.authState.creds.registered) {
-            return res.status(400).json({ error: "WA Checker is already linked/registered." });
-        }
-        try {
-            const cleanPhone = phone.replace(/[^\d]/g, '');
-            console.log(`Requesting pairing code for: ${cleanPhone}`);
-            const code = await sock.requestPairingCode(cleanPhone);
-            console.log(`PAIRING CODE GENERATED: ${code}`);
-            return res.json({ success: true, code: code, phone: cleanPhone });
-        } catch (err) {
-            console.error("Failed to request pairing code:", err);
-            return res.status(500).json({ error: err.message });
-        }
-    });
-
-    app.get('/check', async (req, res) => {
-        const phone = req.query.phone;
-        if (!phone) {
-            return res.status(400).json({ error: "Missing phone parameter" });
-        }
-
-        if (!sock.authState.creds.registered) {
-            return res.status(503).json({ registered: null, error: "WA Checker is not linked/authenticated yet." });
-        }
-
-        try {
-            // Normalize number format for JID (digits only + JID suffix)
-            const cleanPhone = phone.replace(/[^\d]/g, '');
-            const jid = `${cleanPhone}@s.whatsapp.net`;
-
-            console.log(`Checking registration for: ${cleanPhone}`);
-            const results = await sock.onWhatsApp(jid);
-
-            const registered = results && results.length > 0 && results[0].exists;
-            return res.json({ registered: !!registered });
-        } catch (e) {
-            console.error("Error querying WhatsApp registration:", e);
-            return res.status(500).json({ registered: null, error: e.message });
-        }
-    });
 }
 
+// Start WhatsApp connection
 startWA();
+
+// Define Express routes once outside startWA() to avoid duplicate listener registration
+app.get('/pair', async (req, res) => {
+    const phone = req.query.phone;
+    if (!phone) {
+        return res.status(400).json({ error: "Missing phone parameter" });
+    }
+    if (!sock) {
+        return res.status(503).json({ error: "WA Checker is starting up, please try again." });
+    }
+    if (sock.authState.creds.registered) {
+        return res.status(400).json({ error: "WA Checker is already linked/registered." });
+    }
+    try {
+        const cleanPhone = phone.replace(/[^\d]/g, '');
+        console.log(`Requesting pairing code for: ${cleanPhone}`);
+        const code = await sock.requestPairingCode(cleanPhone);
+        console.log(`PAIRING CODE GENERATED: ${code}`);
+        return res.json({ success: true, code: code, phone: cleanPhone });
+    } catch (err) {
+        console.error("Failed to request pairing code:", err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/check', async (req, res) => {
+    const phone = req.query.phone;
+    if (!phone) {
+        return res.status(400).json({ error: "Missing phone parameter" });
+    }
+
+    if (!sock || !sock.authState || !sock.authState.creds.registered) {
+        return res.status(503).json({ registered: null, error: "WA Checker is not linked/authenticated yet." });
+    }
+
+    if (!isConnected) {
+        return res.status(503).json({ registered: null, error: "WA Checker is linked but connection to WhatsApp is currently closed/reconnecting. Please wait." });
+    }
+
+    try {
+        // Normalize number format for JID (digits only + JID suffix)
+        const cleanPhone = phone.replace(/[^\d]/g, '');
+        const jid = `${cleanPhone}@s.whatsapp.net`;
+
+        console.log(`Checking registration for: ${cleanPhone}`);
+        let results = await sock.onWhatsApp(jid);
+
+        // Fallback: try cleanPhone without suffix if results is empty or undefined
+        if (!results || results.length === 0) {
+            results = await sock.onWhatsApp(cleanPhone);
+        }
+
+        const registered = results && results.length > 0 && (results[0].exists || results[0].exists === undefined);
+        console.log(`Result for ${cleanPhone}: registered = ${!!registered}`);
+        return res.json({ registered: !!registered });
+    } catch (e) {
+        console.error("Error querying WhatsApp registration:", e);
+        return res.status(500).json({ registered: null, error: e.message });
+    }
+});
 
 app.listen(port, () => {
     console.log(`WA Checker Server listening on port ${port}`);

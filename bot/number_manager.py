@@ -25,7 +25,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 WA_CHECKER_URL = os.environ.get("WA_CHECKER_URL", "").rstrip("/")
-TIMEOUT = 10
+TIMEOUT = 30
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ def check_wa_registered(phone: str) -> bool | None:
     Return:
         True  → terdaftar (merah)
         False → belum terdaftar / fresh (hijau)
-        None  → tidak bisa cek (checker belum konek)
+        None  → tidak bisa cek (checker belum konek / error)
     """
     if not WA_CHECKER_URL:
         return None
@@ -99,8 +99,19 @@ def check_wa_registered(phone: str) -> bool | None:
         )
         if r.status_code == 200:
             data = r.json()
-            return bool(data.get("registered", False))
-        logger.warning(f"WA checker returned HTTP {r.status_code} for {phone}")
+            reg = data.get("registered")
+            if reg is None:
+                err_msg = data.get("error", "No registration result")
+                logger.warning(f"WA checker registered=null for {phone}: {err_msg}")
+                return None
+            return bool(reg)
+
+        # Parse error message from non-200 responses
+        try:
+            err_msg = r.json().get("error", "Unknown checker error")
+        except Exception:
+            err_msg = r.text or "Unknown checker error"
+        logger.warning(f"WA checker returned HTTP {r.status_code} for {phone}: {err_msg}")
         return None
     except requests.exceptions.Timeout:
         logger.warning(f"WA checker timeout for {phone}")
