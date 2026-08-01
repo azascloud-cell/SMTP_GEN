@@ -17,6 +17,7 @@ import re
 import random
 import string
 import socket
+import struct
 import logging
 import requests
 from typing import Optional
@@ -41,55 +42,93 @@ _DOH_CACHE: dict = {}          # { hostname: ip }
 _ORIG_GETADDRINFO = socket.getaddrinfo
 
 
-def _resolve_via_doh(hostname: str) -> Optional[str]:
-    """Resolve hostname lewat DNS-over-HTTPS.
+def _udp_dns_lookup(hostname: str, nameservers=("8.8.8.8", "1.1.1.1", "9.9.9.9"),
+                    port: int = 53) -> Optional[str]:
+    """Resolve A record via raw UDP DNS query langsung ke public nameserver.
 
-    Pakai IP address langsung untuk DoH agar tidak perlu DNS sama sekali
-    (GitHub Actions runner kadang tidak bisa resolve domain tertentu).
+    Tidak butuh library tambahan, tidak butuh DNS system, tidak butuh HTTP.
+    Koneksi UDP ke IP:53 tidak butuh DNS resolution.
     """
-    if hostname in _DOH_CACHE:
-        return _DOH_CACHE[hostname]
+    # Build DNS query packet
+    txid   = random.randint(0, 65535)
+    header = struct.pack("!HHHHHH", txid, 0x0100, 1, 0, 0, 0)
+    qname  = b""
+    for label in hostname.encode().split(b"."):
+        qname += bytes([len(label)]) + label
+    qname += b"\x00"
+    packet = header + qname + struct.pack("!HH", 1, 1)  # QTYPE=A, QCLASS=IN
 
-    # Gunakan IP langsung — tidak butuh DNS untuk reach endpoint DoH ini
-    endpoints = [
-        # Cloudflare 1.1.1.1 — JSON API, IP langsung, cert valid untuk 1.1.1.1
-        f"https://1.1.1.1/dns-query?name={hostname}&type=A",
-        # Google 8.8.8.8 — cert punya SAN untuk 8.8.8.8
-        f"https://8.8.8.8/resolve?name={hostname}&type=A",
-        # Quad9 9.9.9.9
-        f"https://9.9.9.9:5053/dns-query?name={hostname}&type=A",
-        # Cloudflare alt IP
-        f"https://1.0.0.1/dns-query?name={hostname}&type=A",
-    ]
-    doh_headers = {"Accept": "application/dns-json"}
-    for url in endpoints:
+    for ns in nameservers:
+        sock = None
         try:
-            r = requests.get(url, headers=doh_headers, timeout=8, verify=False)
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            for ans in data.get("Answer", []):
-                if ans.get("type") == 1:   # A record
-                    ip = ans["data"]
-                    _DOH_CACHE[hostname] = ip
-                    logger.info(f"DoH ({url.split('/')[2]}) resolved {hostname} → {ip}")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(4)
+            sock.sendto(packet, (ns, port))
+            data, _ = sock.recvfrom(512)
+
+            # Parse answer section — skip header (12 bytes) + question
+            offset = 12
+            # Skip QNAME
+            while offset < len(data) and data[offset] != 0:
+                if data[offset] & 0xC0 == 0xC0:
+                    offset += 2; break
+                offset += data[offset] + 1
+            else:
+                offset += 1
+            offset += 4  # QTYPE + QCLASS
+
+            # Parse each answer RR
+            ans_count = struct.unpack("!H", data[6:8])[0]
+            for _ in range(ans_count):
+                if offset >= len(data):
+                    break
+                # Skip NAME (pointer or label)
+                if data[offset] & 0xC0 == 0xC0:
+                    offset += 2
+                else:
+                    while offset < len(data) and data[offset] != 0:
+                        if data[offset] & 0xC0 == 0xC0:
+                            offset += 2; break
+                        offset += data[offset] + 1
+                    else:
+                        offset += 1
+                if offset + 10 > len(data):
+                    break
+                rtype, _, _, rdlen = struct.unpack("!HHIH", data[offset:offset+10])
+                offset += 10
+                if rtype == 1 and rdlen == 4:   # A record
+                    ip = ".".join(str(b) for b in data[offset:offset+4])
+                    logger.info(f"UDP DNS ({ns}) resolved {hostname} → {ip}")
                     return ip
+                offset += rdlen
         except Exception as exc:
-            logger.debug(f"DoH endpoint {url} failed: {exc}")
-    logger.warning(f"DoH: semua endpoint gagal untuk {hostname}")
+            logger.debug(f"UDP DNS {ns} failed: {exc}")
+        finally:
+            if sock:
+                try: sock.close()
+                except Exception: pass
+
+    logger.warning(f"UDP DNS: semua nameserver gagal untuk {hostname}")
     return None
 
 
 def _patched_getaddrinfo(host, port, *args, **kwargs):
-    """socket.getaddrinfo yang fallback ke DoH jika DNS biasa gagal."""
+    """socket.getaddrinfo yang fallback ke UDP DNS langsung jika system DNS gagal."""
     try:
         return _ORIG_GETADDRINFO(host, port, *args, **kwargs)
     except socket.gaierror:
-        ip = _resolve_via_doh(host)
+        # Jangan retry untuk IP address — langsung raise
+        try:
+            socket.inet_aton(host)   # sukses → ini sudah IP, bukan hostname
+            raise
+        except OSError:
+            pass
+        ip = _DOH_CACHE.get(host) or _udp_dns_lookup(host)
         if ip:
-            logger.info(f"DNS biasa gagal untuk {host!r}, pakai DoH IP={ip}")
+            _DOH_CACHE[host] = ip
+            logger.info(f"System DNS gagal untuk {host!r}, pakai UDP DNS IP={ip}")
             return _ORIG_GETADDRINFO(ip, port, *args, **kwargs)
-        raise   # biarkan error asli naik
+        raise
 
 
 # Aktifkan patch sekali saat modul di-import
