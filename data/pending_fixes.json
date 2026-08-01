@@ -14,5 +14,13 @@
     "sent_at": 1785577088.7753913,
     "notified": false,
     "check_count": 55
+  },
+  "6874843931_+249113275775_1785582718": {
+    "chat_id": 6874843931,
+    "phone": "+249113275775",
+    "smtp_email": "azascloud@gmail.com",
+    "sent_at": 1785582718.5990057,
+    "notified": false,
+    "check_count": 0
   }
 }
