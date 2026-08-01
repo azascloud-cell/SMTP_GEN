@@ -21,7 +21,7 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785582718.5990057,
     "notified": false,
-    "check_count": 8
+    "check_count": 7
   },
   "6874843931_+249113275775_1785582785": {
     "chat_id": 6874843931,
@@ -29,6 +29,6 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785582785.690543,
     "notified": false,
-    "check_count": 6
+    "check_count": 7
   }
 }
