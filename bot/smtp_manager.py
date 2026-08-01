@@ -3,13 +3,13 @@ SMTP Manager – simpan, verifikasi, dan kelola akun SMTP nyata
 (Gmail dengan App Password, atau provider lain yang mendukung)
 """
 
-import json
 import os
 import smtplib
 import imaplib
 import logging
 from pathlib import Path
 from typing import Optional
+from storage import load as _gh_load, save as _gh_save
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +58,11 @@ DEFAULT_PRESET = {
 
 # ─────────────────────────────────────────────────────────────────────────────
 def _load() -> dict:
-    if DATA_FILE.exists():
-        try:
-            return json.loads(DATA_FILE.read_text())
-        except Exception:
-            pass
-    return {}
+    return _gh_load(DATA_FILE)
 
 
 def _save(data: dict):
-    DATA_FILE.write_text(json.dumps(data, indent=2))
+    _gh_save(DATA_FILE, data)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

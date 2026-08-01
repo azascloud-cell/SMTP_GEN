@@ -7,13 +7,14 @@ import smtplib
 import imaplib
 import email as email_lib
 import logging
-import json
+import re
 import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
+from storage import load as _gh_load, save as _gh_save
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +47,11 @@ Best regards,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_pending() -> dict:
-    if PENDING_FILE.exists():
-        try:
-            return json.loads(PENDING_FILE.read_text())
-        except Exception:
-            pass
-    return {}
+    return _gh_load(PENDING_FILE)
 
 
 def _save_pending(data: dict):
-    PENDING_FILE.write_text(json.dumps(data, indent=2))
+    _gh_save(PENDING_FILE, data)
 
 
 def add_pending(chat_id: int, phone: str, smtp_email: str, sent_at: float) -> str:
@@ -149,29 +145,67 @@ def _decode_header(val: str) -> str:
         return val or ""
 
 
+def _strip_html(text: str) -> str:
+    """Hapus tag HTML dan bersihkan whitespace berlebih."""
+    # Ganti <br>, <p>, <div> dengan newline dulu
+    text = re.sub(r"<br\s*/?>|</p>|</div>|</tr>", "\n", text, flags=re.IGNORECASE)
+    # Hapus semua tag HTML
+    text = re.sub(r"<[^>]+>", "", text)
+    # Decode HTML entities
+    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">") \
+               .replace("&nbsp;", " ").replace("&#039;", "'").replace("&quot;", '"')
+    # Bersihkan baris kosong berlebih
+    lines = [l.strip() for l in text.splitlines()]
+    lines = [l for l in lines if l]
+    return "\n".join(lines)
+
+
 def _get_email_body(msg) -> str:
-    """Ambil body text dari email."""
-    body = ""
+    """Ambil body text dari email, prefer text/plain, fallback strip HTML."""
+    plain = ""
+    html  = ""
+
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
             cd = str(part.get("Content-Disposition", ""))
-            if ct == "text/plain" and "attachment" not in cd:
-                try:
-                    charset = part.get_content_charset() or "utf-8"
-                    body = part.get_payload(decode=True).decode(charset, errors="replace")
-                    break
-                except Exception:
-                    pass
+            if "attachment" in cd:
+                continue
+            try:
+                charset = part.get_content_charset() or "utf-8"
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    continue
+                decoded = payload.decode(charset, errors="replace")
+                if ct == "text/plain" and not plain:
+                    plain = decoded
+                elif ct == "text/html" and not html:
+                    html = decoded
+            except Exception:
+                pass
     else:
         try:
             charset = msg.get_content_charset() or "utf-8"
-            body = msg.get_payload(decode=True).decode(charset, errors="replace")
+            payload = msg.get_payload(decode=True)
+            if payload:
+                body = payload.decode(charset, errors="replace")
+                if msg.get_content_type() == "text/html":
+                    html = body
+                else:
+                    plain = body
         except Exception:
             pass
+
+    # Pilih plain text; kalau tidak ada, strip dari HTML
+    body = plain if plain else _strip_html(html)
+
+    # Bersihkan quoted-printable artifacts (=20, =\n, dll)
+    body = re.sub(r"=\r?\n", "", body)
+    body = re.sub(r"=[0-9A-Fa-f]{2}", lambda m: chr(int(m.group()[1:], 16)), body)
+
     # Potong jika terlalu panjang
-    if len(body) > 800:
-        body = body[:800] + "…"
+    if len(body) > 600:
+        body = body[:600] + "…"
     return body.strip()
 
 
