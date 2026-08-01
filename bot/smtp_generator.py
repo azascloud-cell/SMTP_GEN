@@ -5,6 +5,7 @@ dan mengembalikan konfigurasi SMTP / IMAP yang siap pakai.
 
 import logging
 import random
+import re
 import string
 from datetime import datetime, timedelta, timezone
 
@@ -13,6 +14,14 @@ import requests
 logger = logging.getLogger(__name__)
 
 SESSION = requests.Session()
+
+
+def _strip_html(html: str) -> str:
+    if not html:
+        return ""
+    # Hapus basic HTML tags
+    text = re.sub(r"<[^>]+>", "", html)
+    return text.strip()
 SESSION.headers.update({"User-Agent": "SMTPGenBot/1.0"})
 TIMEOUT = 15  # detik
 
@@ -70,6 +79,55 @@ class _1SecMail:
             "note":      "Inbox dapat dicek via 1secmail.com atau API-nya",
         }
 
+    @staticmethod
+    def get_inbox(email: str) -> list[dict]:
+        if "@" not in email:
+            return []
+        username, domain = email.split("@", 1)
+        try:
+            r = SESSION.get(
+                "https://www.1secmail.com/api/v1/",
+                params={"action": "getMessages", "login": username, "domain": domain},
+                timeout=TIMEOUT,
+            )
+            if r.status_code == 200:
+                messages = r.json()
+                results = []
+                for msg in messages:
+                    results.append({
+                        "id":      str(msg.get("id")),
+                        "from":    msg.get("from", "?"),
+                        "subject": msg.get("subject", "?"),
+                        "date":    msg.get("date", "?"),
+                    })
+                return results
+        except Exception as e:
+            logger.warning(f"1SecMail check inbox error: {e}")
+        return []
+
+    @staticmethod
+    def read_message(email: str, msg_id: str) -> dict | None:
+        if "@" not in email:
+            return None
+        username, domain = email.split("@", 1)
+        try:
+            r = SESSION.get(
+                "https://www.1secmail.com/api/v1/",
+                params={"action": "readMessage", "login": username, "domain": domain, "id": msg_id},
+                timeout=TIMEOUT,
+            )
+            if r.status_code == 200:
+                msg = r.json()
+                return {
+                    "from":    msg.get("from", "?"),
+                    "subject": msg.get("subject", "?"),
+                    "date":    msg.get("date", "?"),
+                    "body":    msg.get("textBody") or _strip_html(msg.get("htmlBody", "")),
+                }
+        except Exception as e:
+            logger.warning(f"1SecMail read message error: {e}")
+        return None
+
 
 class _GuerrillaMail:
     """https://guerrillamail.com — well-known disposable email."""
@@ -109,6 +167,54 @@ class _GuerrillaMail:
             "expires":   _expire_label(60),
             "note":      "Buka guerrillamail.com untuk cek inbox",
         }
+
+    @staticmethod
+    def get_inbox(sid_token: str) -> list[dict]:
+        if not sid_token:
+            return []
+        try:
+            r = SESSION.get(
+                "https://api.guerrillamail.com/ajax.php",
+                params={"f": "check_email", "sid_token": sid_token, "seq": 0},
+                timeout=TIMEOUT,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                messages = data.get("list", [])
+                results = []
+                for msg in messages:
+                    results.append({
+                        "id":      str(msg.get("mail_id")),
+                        "from":    msg.get("mail_from", "?"),
+                        "subject": msg.get("mail_subject", "?"),
+                        "date":    msg.get("mail_date", "?"),
+                    })
+                return results
+        except Exception as e:
+            logger.warning(f"GuerrillaMail check inbox error: {e}")
+        return []
+
+    @staticmethod
+    def read_message(sid_token: str, msg_id: str) -> dict | None:
+        if not sid_token:
+            return None
+        try:
+            r = SESSION.get(
+                "https://api.guerrillamail.com/ajax.php",
+                params={"f": "fetch_email", "sid_token": sid_token, "email_id": msg_id},
+                timeout=TIMEOUT,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return {
+                    "from":    data.get("mail_from", "?"),
+                    "subject": data.get("mail_subject", "?"),
+                    "date":    data.get("mail_date", "?"),
+                    "body":    data.get("mail_body", ""),
+                }
+        except Exception as e:
+            logger.warning(f"GuerrillaMail read message error: {e}")
+        return None
 
 
 class _MailTm:
@@ -156,6 +262,71 @@ class _MailTm:
             "expires":   _expire_label(0),  # tidak expire
             "note":      "Akun permanen – login di mail.tm untuk cek inbox",
         }
+
+    @classmethod
+    def get_token(cls, email: str, password: str) -> str | None:
+        try:
+            r = SESSION.post(
+                f"{cls.BASE}/token",
+                json={"address": email, "password": password},
+                timeout=TIMEOUT,
+            )
+            if r.status_code in (200, 201):
+                return r.json().get("token")
+        except Exception as e:
+            logger.warning(f"Mail.tm get token error: {e}")
+        return None
+
+    @classmethod
+    def get_inbox(cls, email: str, password: str) -> list[dict]:
+        token = cls.get_token(email, password)
+        if not token:
+            return []
+        try:
+            r = SESSION.get(
+                f"{cls.BASE}/messages",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=TIMEOUT,
+            )
+            if r.status_code == 200:
+                messages = r.json().get("hydra:member", [])
+                results = []
+                for msg in messages:
+                    results.append({
+                        "id":      str(msg.get("id")),
+                        "from":    msg.get("from", {}).get("address", "?"),
+                        "subject": msg.get("subject", "?"),
+                        "date":    msg.get("createdAt", "?"),
+                    })
+                return results
+        except Exception as e:
+            logger.warning(f"Mail.tm check inbox error: {e}")
+        return []
+
+    @classmethod
+    def read_message(cls, email: str, password: str, msg_id: str) -> dict | None:
+        token = cls.get_token(email, password)
+        if not token:
+            return None
+        try:
+            r = SESSION.get(
+                f"{cls.BASE}/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=TIMEOUT,
+            )
+            if r.status_code == 200:
+                msg = r.json()
+                htmls = msg.get("html", [])
+                html_body = htmls[0] if htmls else ""
+                return {
+                    "from":    msg.get("from", {}).get("address", "?"),
+                    "subject": msg.get("subject", "?"),
+                    "date":    msg.get("createdAt", "?"),
+                    "body":    msg.get("text") or _strip_html(html_body),
+                }
+        except Exception as e:
+            logger.warning(f"Mail.tm read message error: {e}")
+        return None
 
 
 class _TempMailOrg:
@@ -252,3 +423,33 @@ class SMTPGenerator:
         except Exception as e:
             logger.error(f"[{provider.NAME}] generate error: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def check_inbox(last_email_data: dict) -> list[dict]:
+        provider = last_email_data.get("provider")
+        email = last_email_data.get("email", "")
+        password = last_email_data.get("password", "")
+        sid_token = last_email_data.get("sid_token", "")
+
+        if provider == "1SecMail":
+            return _1SecMail.get_inbox(email)
+        elif provider == "GuerrillaMail":
+            return _GuerrillaMail.get_inbox(sid_token)
+        elif provider == "Mail.tm":
+            return _MailTm.get_inbox(email, password)
+        return []
+
+    @staticmethod
+    def read_message(last_email_data: dict, msg_id: str) -> dict | None:
+        provider = last_email_data.get("provider")
+        email = last_email_data.get("email", "")
+        password = last_email_data.get("password", "")
+        sid_token = last_email_data.get("sid_token", "")
+
+        if provider == "1SecMail":
+            return _1SecMail.read_message(email, msg_id)
+        elif provider == "GuerrillaMail":
+            return _GuerrillaMail.read_message(sid_token, msg_id)
+        elif provider == "Mail.tm":
+            return _MailTm.read_message(email, password, msg_id)
+        return None

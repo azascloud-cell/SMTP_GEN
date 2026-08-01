@@ -228,11 +228,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📱 {checker_status}\n\n"
         f"📱 *Cek Nomor WA* — upload file .txt berisi nomor\n"
-        f"📧 *Email Temp* — hanya untuk menerima \\(web only\\)\n"
+        f"📧 *Email Temp* — generate & cek inbox langsung dari bot\n"
         f"➕ *SMTP Manual* — tambah Gmail/Yahoo dengan App Password\n"
         f"🔧 *WA Fix* — banding ban WhatsApp\n\n"
         f"Pilih menu di bawah:",
-        parse_mode="MarkdownV2",
+        parse_mode="Markdown",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -241,12 +241,18 @@ async def cmd_generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate email temp (receive-only)."""
     msg = await update.message.reply_text("⏳ Generate email sementara...")
     result = await asyncio.to_thread(generator.generate_random)
-    await msg.edit_text(
-        fmt_tempmail(result), parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
+    if result["success"]:
+        context.user_data["last_temp_email"] = result["data"]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Cek Inbox", callback_data="check_inbox_temp")],
             [InlineKeyboardButton("🔄 Generate Lagi", callback_data="gen")],
             [InlineKeyboardButton("🏠 Menu Utama",    callback_data="back_main")],
-        ]),
+        ])
+    else:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+    await msg.edit_text(
+        fmt_tempmail(result), parse_mode="Markdown",
+        reply_markup=kb,
     )
 
 
@@ -441,21 +447,21 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "❓ *Panduan Bot*\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "📱 *Cek Nomor WA*\n"
-        "Upload file `.txt` \\(satu nomor per baris\\)\n"
+        "Upload file `.txt` (satu nomor per baris)\n"
         "Bot pilih 3 nomor acak & cek status WA\n"
         "🟢 Hijau = fresh, 🔴 Merah = terdaftar WA\n\n"
-        "📧 *Email Temp* \\(Receive Only\\)\n"
-        "Langsung generate, tapi hanya untuk menerima\n\n"
-        "➕ *SMTP Manual* \\(Gmail/Yahoo\\)\n"
-        "`/addsmtp email|app\\_password`\n\n"
-        "📬 *Mailtrap SMTP* \\(sandbox testing\\)\n"
+        "📧 *Email Temp* (Inbox Terintegrasi)\n"
+        "Langsung generate & cek inbox langsung di dalam bot!\n\n"
+        "➕ *SMTP Manual* (Gmail/Yahoo)\n"
+        "`/addsmtp email|app_password`\n\n"
+        "📬 *Mailtrap SMTP* (sandbox testing)\n"
         "`/addmailtrap username|password`\n"
-        "Credentials dari mailtrap\\.io → Inboxes → SMTP Settings\n\n"
-        "🔩 *Mailpit SMTP* \\(self\\-hosted\\)\n"
+        "Credentials dari mailtrap.io → Inboxes → SMTP Settings\n\n"
+        "🔩 *Mailpit SMTP* (self-hosted)\n"
         "`/addmailpit host:port`\n"
         "`/addmailpit host:port|user|pass`\n\n"
         "🔧 *WhatsApp Fix*\n"
-        "`/fix \\+628xxxxxxxx`\n"
+        "`/fix +628xxxxxxxx`\n"
         "Kirim email banding ke WhatsApp support\n\n"
         "📋 *Commands:*\n"
         "/start — Menu utama\n"
@@ -467,7 +473,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/delsmtp — Hapus akun SMTP\n"
         "/fix — Banding ban WhatsApp\n"
         "/status — Status bot",
-        parse_mode="MarkdownV2",
+        parse_mode="Markdown",
     )
 
 
@@ -604,7 +610,8 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1️⃣ Kirim email banding ke WhatsApp Support\n"
             "2️⃣ Monitor inbox IMAP untuk balasan\n"
             "3️⃣ Notifikasi kamu otomatis saat ada balasan\n\n"
-            "💡 Pastikan ada akun SMTP manual dulu: `/addsmtp`",
+            "💡 Pastikan ada akun SMTP manual dulu: `/addsmtp`\n"
+            "⚠️ Catatan: Akun auto-generated dari temporary email (seperti Mail.tm) tidak diizinkan mengirim email ke luar domain oleh provider, silakan gunakan SMTP manual (Gmail/Yahoo/cPanel) untuk kirim banding.",
             parse_mode="Markdown",
         )
         return
@@ -614,15 +621,17 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = "+" + phone
 
     accounts = manager.list_accounts()
-    verified = [a for a in accounts if a.get("verified")]
+    # Filter out auto generated emails because they can't send external email
+    verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
     if not verified:
         await update.message.reply_text(
-            "❌ *Tidak ada akun SMTP yang aktif\\!*\n\n"
+            "❌ *Tidak ada akun SMTP yang aktif!*\n\n"
             "Tambah dulu dengan:\n"
             "`/addsmtp email@gmail.com|app_password`\n\n"
             "📌 Gmail App Password:\n"
-            "myaccount\\.google\\.com/apppasswords",
-            parse_mode="MarkdownV2",
+            "myaccount.google.com/apppasswords\n\n"
+            "⚠️ Catatan: Akun SMTP otomatis (seperti Mail.tm) tidak bisa dipakai kirim email banding.",
+            parse_mode="Markdown",
         )
         return
 
@@ -1158,12 +1167,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "gen":
         await query.edit_message_text("⏳ Generate email sementara...")
         result = await asyncio.to_thread(generator.generate_random)
-        await query.edit_message_text(
-            fmt_tempmail(result), parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
+        if result["success"]:
+            context.user_data["last_temp_email"] = result["data"]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Cek Inbox", callback_data="check_inbox_temp")],
                 [InlineKeyboardButton("🔄 Generate Lagi",  callback_data="gen")],
                 [InlineKeyboardButton("🏠 Menu Utama",     callback_data="back_main")],
-            ]),
+            ])
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+        await query.edit_message_text(
+            fmt_tempmail(result), parse_mode="Markdown",
+            reply_markup=kb,
         )
 
     elif data == "menu_provider":
@@ -1176,12 +1191,113 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         provider = data[5:]
         await query.edit_message_text(f"⏳ Generate dari *{provider}*...", parse_mode="Markdown")
         result = await asyncio.to_thread(generator.generate_by_provider, provider)
-        await query.edit_message_text(
-            fmt_tempmail(result), parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
+        if result["success"]:
+            context.user_data["last_temp_email"] = result["data"]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Cek Inbox", callback_data="check_inbox_temp")],
                 [InlineKeyboardButton("🔄 Generate Lagi",  callback_data=f"prov_{provider}")],
                 [InlineKeyboardButton("📋 Ganti Provider", callback_data="menu_provider")],
                 [InlineKeyboardButton("🏠 Menu Utama",     callback_data="back_main")],
+            ])
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+        await query.edit_message_text(
+            fmt_tempmail(result), parse_mode="Markdown",
+            reply_markup=kb,
+        )
+
+    elif data == "check_inbox_temp":
+        last_email = context.user_data.get("last_temp_email")
+        if not last_email:
+            await query.edit_message_text(
+                "❌ *Tidak ada email aktif.*\nSilakan generate email baru terlebih dahulu.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]]),
+            )
+            return
+
+        provider = last_email.get("provider", "")
+        email_addr = last_email.get("email", "")
+        await query.edit_message_text(
+            f"📥 *Mengecek Inbox...*\n📧 Email: `{email_addr}`\n🔖 Provider: *{provider}*",
+            parse_mode="Markdown",
+        )
+
+        messages = await asyncio.to_thread(generator.check_inbox, last_email)
+        if not messages:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh Inbox", callback_data="check_inbox_temp")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+            ])
+            await query.edit_message_text(
+                f"📭 *Inbox Kosong*\n\n📧 Email: `{email_addr}`\n\nBelum ada email masuk. Silakan kirim email ke alamat di atas lalu klik Refresh.",
+                parse_mode="Markdown",
+                reply_markup=kb,
+            )
+            return
+
+        # List messages (max 5)
+        lines = [
+            f"📥 *Inbox untuk:* `{email_addr}`",
+            f"📊 Total: *{len(messages)}* email baru",
+            "━━━━━━━━━━━━━━━━━━━━\n",
+        ]
+        rows = []
+        for i, msg in enumerate(messages[:5], 1):
+            sub = msg.get("subject", "No Subject")[:35]
+            lines.append(f"✉️ *{i}. Dari:* `{msg.get('from')}`")
+            lines.append(f"📌 *Sub:* _{sub}_")
+            lines.append(f"📅 *Date:* {msg.get('date')}\n")
+
+            rows.append([InlineKeyboardButton(f"📖 Baca Email #{i}", callback_data=f"read_temp_{msg.get('id')}")])
+
+        rows.append([InlineKeyboardButton("🔄 Refresh Inbox", callback_data="check_inbox_temp")])
+        rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
+    elif data.startswith("read_temp_"):
+        msg_id = data[len("read_temp_"):]
+        last_email = context.user_data.get("last_temp_email")
+        if not last_email:
+            await query.edit_message_text(
+                "❌ Email tidak aktif.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]]),
+            )
+            return
+
+        await query.edit_message_text("⏳ Membaca email...")
+        msg = await asyncio.to_thread(generator.read_message, last_email, msg_id)
+        if not msg:
+            await query.edit_message_text(
+                "❌ Gagal memuat detail email.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali ke Inbox", callback_data="check_inbox_temp")]]),
+            )
+            return
+
+        body = msg.get("body", "")
+        # Limit to 3000 chars to avoid Telegram message limits
+        if len(body) > 3000:
+            body = body[:3000] + "\n\n...[Teks Terpotong]..."
+
+        lines = [
+            f"📧 *Detail Email Masuk*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"👤 *Dari:* `{msg.get('from')}`",
+            f"📌 *Subject:* {msg.get('subject')}",
+            f"📅 *Tanggal:* {msg.get('date')}",
+            f"━━━━━━━━━━━━━━━━━━━━\n",
+            f"{body}",
+        ]
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Kembali ke Inbox", callback_data="check_inbox_temp")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
             ]),
         )
 
