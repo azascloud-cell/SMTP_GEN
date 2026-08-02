@@ -180,7 +180,7 @@
     "phone": "+249114601873",
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785663413.7475622,
-    "notified": false,
+    "notified": true,
     "check_count": 1
   }
 }
