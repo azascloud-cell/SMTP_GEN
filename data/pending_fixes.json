@@ -100,7 +100,7 @@
     "phone": "+249113883827",
     "smtp_email": "mahirujawa@gmail.com",
     "sent_at": 1785638547.2532592,
-    "notified": false,
+    "notified": true,
     "check_count": 9
   }
 }
