@@ -118,5 +118,13 @@
     "sent_at": 1785640849.079566,
     "notified": true,
     "check_count": 1
+  },
+  "6874843931_+258865049473_1785641378": {
+    "chat_id": 6874843931,
+    "phone": "+258865049473",
+    "smtp_email": "mahirujawa@gmail.com",
+    "sent_at": 1785641378.5496433,
+    "notified": false,
+    "check_count": 0
   }
 }
