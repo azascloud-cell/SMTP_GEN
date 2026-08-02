@@ -41,6 +41,7 @@ from whatsapp_fix import (
     check_whatsapp_reply,
     get_all_pending,
     increment_check,
+    mark_maybe_notified,
     mark_notified,
     send_appeal_email,
 )
@@ -672,11 +673,27 @@ async def imap_monitor_loop(bot: Bot):
                 smtp_em = item["smtp_email"]
 
                 if reply:
-                    body_preview = reply.get("body", "")[:400]
-                    confirmed    = reply.get("confirmed", True)
+                    confirmed = reply.get("confirmed", True)
+
+                    # Jika sudah kirim notif "kemungkinan" sebelumnya, skip — cegah spam
+                    if not confirmed and item.get("maybe_notified"):
+                        logger.debug(f"Skip maybe-notif untuk {key} — sudah pernah dikirim")
+                        continue
+
+                    # Escape semua konten dinamis dari email agar tidak crash Telegram parser
+                    import html as _html  # noqa: PLC0415
+                    def _e(s: str) -> str:
+                        return _html.escape(str(s or "-"))
+
+                    from_safe    = _e(reply.get("from",    "-"))
+                    subject_safe = _e(reply.get("subject", "-"))
+                    date_safe    = _e(reply.get("date",    "-"))
+                    body_safe    = _e(reply.get("body",    "")[:500])
+                    phone_safe   = _e(phone)
+                    smtp_safe    = _e(smtp_em)
 
                     if confirmed:
-                        header = "📬 *EMAIL DIBALAS OLEH WHATSAPP!*"
+                        header = "📬 <b>EMAIL DIBALAS OLEH WHATSAPP!</b>"
                         info   = (
                             "👋 Kabar gembira! Email banding kamu sudah dibalas oleh WhatsApp Support.\n\n"
                             "Kemungkinan besar nomor kamu sudah berhasil diaktifkan kembali.\n"
@@ -684,7 +701,7 @@ async def imap_monitor_loop(bot: Bot):
                             "Kalau masih ada kendala, coba banding ulang dengan /fix."
                         )
                     else:
-                        header = "📬 *ADA EMAIL MASUK DI INBOX!*"
+                        header = "📬 <b>ADA EMAIL MASUK DI INBOX!</b>"
                         info   = (
                             "⚠️ Ada email masuk di inbox setelah banding dikirim.\n"
                             "Mungkin ini balasan dari WhatsApp, silakan cek manual.\n\n"
@@ -698,22 +715,24 @@ async def imap_monitor_loop(bot: Bot):
                             text=(
                                 f"{header}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📱 Nomor : `{phone}`\n"
-                                f"📧 SMTP  : `{smtp_em}`\n"
+                                f"📱 Nomor : <code>{phone_safe}</code>\n"
+                                f"📧 SMTP  : <code>{smtp_safe}</code>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
                                 f"{info}\n\n"
-                                f"📩 *DETAIL EMAIL*\n"
+                                f"📩 <b>DETAIL EMAIL</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📧 Dari    : {reply.get('from', '-')}\n"
-                                f"📌 Subject : {reply.get('subject', '-')}\n"
-                                f"📅 Tanggal : {reply.get('date', '-')}\n"
+                                f"📧 Dari    : {from_safe}\n"
+                                f"📌 Subject : {subject_safe}\n"
+                                f"📅 Tanggal : {date_safe}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"{body_preview}"
+                                f"<pre>{body_safe}</pre>"
                             ),
-                            parse_mode="Markdown",
+                            parse_mode="HTML",
                         )
                         if confirmed:
                             mark_notified(key)
+                        else:
+                            mark_maybe_notified(key)
                         logger.info(f"Notifikasi balasan terkirim ke {chat_id} untuk {phone} (confirmed={confirmed})")
                     except Exception as e:  # noqa: BLE001
                         logger.error(f"Gagal kirim notif ke {chat_id}: {e}")

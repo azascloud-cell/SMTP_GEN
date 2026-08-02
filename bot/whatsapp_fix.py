@@ -11,11 +11,12 @@ Fix v2:
 """
 
 import email as email_lib
+import html as html_lib
 import imaplib
 import logging
 import re
 import smtplib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -110,6 +111,17 @@ def increment_check(key: str):
     data = _load_pending()
     if key in data:
         data[key]["check_count"] = data[key].get("check_count", 0) + 1
+        _save_pending(data)
+
+
+def mark_maybe_notified(key: str):
+    """
+    Tandai bahwa notifikasi 'kemungkinan balasan' sudah pernah dikirim.
+    Mencegah bot spam notif yang sama setiap 90 detik untuk email non-WA.
+    """
+    data = _load_pending()
+    if key in data:
+        data[key]["maybe_notified"] = True
         _save_pending(data)
 
 
@@ -348,10 +360,12 @@ def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> dict | N
         logger.warning("IMAP skip — login/password kosong")
         return None
 
-    since_date = datetime.fromtimestamp(since_timestamp, tz=timezone.utc)
-    date_str   = since_date.strftime("%d-%b-%Y")
+    since_date  = datetime.fromtimestamp(since_timestamp, tz=timezone.utc)
+    # Mundur 1 hari agar tidak miss email akibat selisih timezone server
+    search_date = since_date - timedelta(days=1)
+    date_str    = search_date.strftime("%d-%b-%Y")
 
-    logger.debug(f"IMAP check — {login}@{imap_host}:{imap_port} since {date_str}")
+    logger.debug(f"IMAP check — {login}@{imap_host}:{imap_port} since {date_str} (sent_at={since_date.date()})")
 
     try:
         conn = imaplib.IMAP4_SSL(imap_host, imap_port, timeout=20)
