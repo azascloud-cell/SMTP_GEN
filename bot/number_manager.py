@@ -109,7 +109,7 @@ def check_wa_registered(phone: str) -> bool | None:
         # Parse error message from non-200 responses
         try:
             err_msg = r.json().get("error", "Unknown checker error")
-        except Exception:
+        except Exception:  # noqa: BLE001
             err_msg = r.text or "Unknown checker error"
         logger.warning(f"WA checker returned HTTP {r.status_code} for {phone}: {err_msg}")
         return None

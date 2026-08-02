@@ -40,14 +40,6 @@ jobs:
       - name: 📦 Install Node dependencies
         run: npm install
 
-      - name: 🔩 Install and Start Mailpit
-        run: |
-          echo "Installing Mailpit..."
-          curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | bash
-          echo "Starting Mailpit on background..."
-          mailpit > mailpit.log 2>&1 &
-          sleep 2
-
       - name: 🔗 Start Baileys WA Checker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -70,8 +62,9 @@ jobs:
           WA_CHECKER_URL:     "http://localhost:3000"
           # ── GitHub PAT untuk auto-update ──────────────────────────────────
           GH_PAT:             ${{ secrets.GH_PAT }}
-          # ── Mailtrap API token untuk auto-generate SMTP ──────────────────
-          MAILTRAP_API_TOKEN: ${{ secrets.MAILTRAP_API_TOKEN }}
+          # ── MailerSend API untuk auto-generate/send SMTP ──────────────────
+          MAILERSEND_API_KEY: ${{ secrets.MAILERSEND_API_KEY }}
+          MAILERSEND_SENDER_EMAIL: ${{ secrets.MAILERSEND_SENDER_EMAIL }}
           # ── cPanel via PHP Proxy API (InfinityFree) ───────────────────────
           CPANEL_API_URL:     ${{ secrets.CPANEL_API_URL }}
           CPANEL_API_KEY:     ${{ secrets.CPANEL_API_KEY }}

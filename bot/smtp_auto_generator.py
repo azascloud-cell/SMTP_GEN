@@ -1,10 +1,10 @@
 """
-SMTP Auto Generator — generate akun SMTP nyata via backend API
+SMTP Auto Generator — generate akun SMTP/API nyata via backend
 tanpa perlu input manual dari user.
 
 Strategi:
-1. Mailtrap API  → buat inbox baru, ambil SMTP credentials (butuh API token)
-2. Mail.tm API   → daftar akun gratis, dapat SMTP credentials (tanpa token)
+1. MailerSend API  → Kirim email via MailerSend API (butuh MAILERSEND_API_KEY)
+2. Mail.tm API      → daftar akun gratis, dapat SMTP credentials (tanpa token)
 """
 
 import logging
@@ -20,7 +20,8 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "SMTPGenBot/2.0"})
 TIMEOUT = 15
 
-MAILTRAP_API_TOKEN = os.environ.get("MAILTRAP_API_TOKEN", "")
+MAILERSEND_API_KEY = os.environ.get("MAILERSEND_API_KEY", "")
+MAILERSEND_SENDER_EMAIL = os.environ.get("MAILERSEND_SENDER_EMAIL", "")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,77 +33,31 @@ def _rand(n: int = 12) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Provider 1: Mailtrap API
+# Provider 1: MailerSend API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def gen_mailtrap_inbox(api_token: str = "") -> dict:
+def gen_mailersend_smtp() -> dict:
     """
-    Buat inbox Mailtrap baru via API, return SMTP credentials.
-    Butuh MAILTRAP_API_TOKEN di env atau di-pass langsung.
-    
-    Docs: https://api-docs.mailtrap.io/docs/mailtrap-api-docs/
+    Generate MailerSend SMTP/API credentials from environment variables.
     """
-    token = api_token or MAILTRAP_API_TOKEN
-    if not token:
-        return {"success": False, "error": "MAILTRAP_API_TOKEN tidak diset di env."}
-
-    inbox_name = f"bot-{_rand(8)}"
-
-    try:
-        # Step 1: Ambil daftar account (ambil account ID pertama)
-        r = SESSION.get(
-            "https://mailtrap.io/api/v1/accounts",
-            headers={"Api-Token": token},
-            timeout=TIMEOUT,
-        )
-        if r.status_code != 200:
-            return {"success": False, "error": f"Gagal ambil accounts: HTTP {r.status_code}"}
-        
-        accounts = r.json()
-        if not accounts:
-            return {"success": False, "error": "Tidak ada account Mailtrap ditemukan."}
-        
-        account_id = accounts[0].get("id")
-        if not account_id:
-            return {"success": False, "error": "account_id tidak ditemukan di response."}
-
-        # Step 2: Buat inbox baru
-        r2 = SESSION.post(
-            f"https://mailtrap.io/api/v1/accounts/{account_id}/inboxes",
-            headers={"Api-Token": token, "Content-Type": "application/json"},
-            json={"inbox": {"name": inbox_name}},
-            timeout=TIMEOUT,
-        )
-        if r2.status_code not in (200, 201):
-            return {"success": False, "error": f"Gagal buat inbox: HTTP {r2.status_code} — {r2.text[:200]}"}
-
-        inbox = r2.json()
-        username = inbox.get("username", "")
-        password = inbox.get("password", "")
-        domain   = inbox.get("domain", "sandbox.smtp.mailtrap.io")
-        inbox_id = inbox.get("id", "?")
-
-        if not username or not password:
-            return {"success": False, "error": "Username/password tidak ada di response Mailtrap."}
-
+    if not MAILERSEND_API_KEY or not MAILERSEND_SENDER_EMAIL:
         return {
-            "success":   True,
-            "provider":  "Mailtrap",
-            "key":       f"mailtrap:{username}",
-            "username":  username,
-            "password":  password,
-            "smtp_host": domain,
-            "smtp_port": 2525,
-            "imap_host": domain.replace("smtp", "imap"),
-            "imap_port": 993,
-            "inbox_name": inbox_name,
-            "inbox_id":   str(inbox_id),
-            "note":      f"Inbox '{inbox_name}' di mailtrap.io/inboxes/{inbox_id}",
+            "success": False,
+            "error": "MAILERSEND_API_KEY atau MAILERSEND_SENDER_EMAIL belum diset di env."
         }
 
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"gen_mailtrap_inbox error: {e}")
-        return {"success": False, "error": str(e)}
+    return {
+        "success": True,
+        "provider": "MailerSend",
+        "key": f"mailersend:{MAILERSEND_SENDER_EMAIL}",
+        "username": MAILERSEND_SENDER_EMAIL,
+        "password": MAILERSEND_API_KEY,
+        "smtp_host": "api.mailersend.com",
+        "smtp_port": 443,
+        "imap_host": "api.mailersend.com",
+        "imap_port": 443,
+        "note": f"MailerSend API (Sender: {MAILERSEND_SENDER_EMAIL})",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,55 +158,29 @@ def gen_guerrilla_smtp() -> dict:
         return {"success": False, "error": str(e)}
 
 
-def gen_mailpit_smtp() -> dict:
-    """
-    Generate SMTP untuk Mailpit (local self-hosted).
-    Default host: localhost, port: 1025. Tanpa username/password.
-    """
-    host = os.environ.get("MAILPIT_SMTP_HOST", "localhost")
-    try:
-        port = int(os.environ.get("MAILPIT_SMTP_PORT", "1025"))
-    except ValueError:
-        port = 1025
-
-    return {
-        "success":   True,
-        "provider":  "Mailpit",
-        "key":       f"mailpit:{host}:{port}",
-        "username":  "",
-        "password":  "",
-        "smtp_host": host,
-        "smtp_port": port,
-        "imap_host": host,
-        "imap_port": 110,
-        "note":      f"Mailpit Local SMTP — host: {host}:{port}",
-    }
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-select best available provider
 # ─────────────────────────────────────────────────────────────────────────────
 
 BACKEND_PROVIDERS = {
-    "mailtrap": gen_mailtrap_inbox,
+    "mailersend": gen_mailersend_smtp,
     "mailtm":   gen_mailtm_smtp,
-    "mailpit":  gen_mailpit_smtp,
 }
 
 
 def auto_gen_smtp(provider: str = "auto") -> dict:
     """
     Generate SMTP otomatis. Pilih provider:
-      'auto'     → Mailtrap jika token ada, fallback Mail.tm
-      'mailtrap' → Mailtrap API (butuh MAILTRAP_API_TOKEN)
-      'mailtm'   → Mail.tm (gratis, tanpa token)
+      'auto'        → MailerSend jika token ada, fallback Mail.tm
+      'mailersend'  → MailerSend API (butuh MAILERSEND_API_KEY)
+      'mailtm'      → Mail.tm (gratis, tanpa token)
     """
     if provider == "auto":
-        if MAILTRAP_API_TOKEN:
-            result = gen_mailtrap_inbox()
+        if MAILERSEND_API_KEY and MAILERSEND_SENDER_EMAIL:
+            result = gen_mailersend_smtp()
             if result["success"]:
                 return result
-            logger.warning(f"Mailtrap gagal, fallback Mail.tm: {result.get('error')}")
+            logger.warning(f"MailerSend gagal, fallback Mail.tm: {result.get('error')}")
         return gen_mailtm_smtp()
 
     fn = BACKEND_PROVIDERS.get(provider)
