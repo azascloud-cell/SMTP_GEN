@@ -316,7 +316,7 @@
     "phone": "+62882015307722",
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785682178.0604014,
-    "notified": false,
+    "notified": true,
     "check_count": 1
   }
 }
