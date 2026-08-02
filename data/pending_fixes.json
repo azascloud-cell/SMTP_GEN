@@ -284,7 +284,7 @@
     "phone": "+22896684195",
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785681737.2395217,
-    "notified": false,
+    "notified": true,
     "check_count": 1
   }
 }
