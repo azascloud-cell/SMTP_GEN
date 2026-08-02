@@ -1,1 +1,15 @@
-{}
+{
+  "bjig66kd9yz3@web-library.net": {
+    "password": "kc7vqlp78lA1!",
+    "username": "bjig66kd9yz3@web-library.net",
+    "provider": "Mail.tm",
+    "smtp_host": "smtp.mail.tm",
+    "smtp_port": 587,
+    "imap_host": "imap.mail.tm",
+    "imap_port": 993,
+    "verified": true,
+    "imap_ok": true,
+    "auto_gen": true,
+    "note": "Akun mail.tm \u2014 inbox di mail.tm (JWT login \u2705)"
+  }
+}
