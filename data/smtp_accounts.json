@@ -11,5 +11,15 @@
     "imap_ok": true,
     "auto_gen": true,
     "note": "Akun mail.tm \u2014 inbox di mail.tm (JWT login \u2705)"
+  },
+  "mahirujawa@gmail.com": {
+    "password": "sych ufvt dgji oomn",
+    "provider": "gmail.com",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "imap_host": "imap.gmail.com",
+    "imap_port": 993,
+    "verified": true,
+    "imap_ok": true
   }
 }
