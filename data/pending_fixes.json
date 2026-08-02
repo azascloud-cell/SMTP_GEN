@@ -37,7 +37,7 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785584937.205619,
     "notified": false,
-    "check_count": 323
+    "check_count": 322
   },
   "6874843931_+62882007662443_1785585457": {
     "chat_id": 6874843931,
@@ -94,5 +94,13 @@
     "sent_at": 1785622423.3386548,
     "notified": false,
     "check_count": 9
+  },
+  "6874843931_+249113883827_1785638547": {
+    "chat_id": 6874843931,
+    "phone": "+249113883827",
+    "smtp_email": "mahirujawa@gmail.com",
+    "sent_at": 1785638547.2532592,
+    "notified": false,
+    "check_count": 0
   }
 }
