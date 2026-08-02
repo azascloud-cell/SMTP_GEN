@@ -268,7 +268,7 @@
     "phone": "+22899325113",
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785681057.769798,
-    "notified": false,
+    "notified": true,
     "check_count": 1
   }
 }
