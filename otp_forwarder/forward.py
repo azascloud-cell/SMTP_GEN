@@ -13,12 +13,12 @@ logger = logging.getLogger("OTPForwarder")
 
 # ── Configuration ────────────────────────────────────────────────────────────
 # Replace these with your values, or set them as environment variables (recommended for GitHub Actions)
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
-XCLUSOR_API_KEY = os.environ.get("XCLUSOR_API_KEY", "YOUR_API_KEY_HERE")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or "YOUR_BOT_TOKEN_HERE"
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") or "YOUR_CHAT_ID_HERE"
+XCLUSOR_API_KEY = os.environ.get("XCLUSOR_API_KEY") or "YOUR_API_KEY_HERE"
 
 # API Endpoint (Can be overridden via env var)
-API_URL = os.environ.get("XCLUSOR_API_URL", "https://api.sms-activate.org/steward.php")
+API_URL = os.environ.get("XCLUSOR_API_URL") or "https://api.sms-activate.org/steward.php"
 
 # Set to keep track of processed message signatures
 processed_activations = set()
