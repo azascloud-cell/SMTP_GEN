@@ -31,3 +31,6 @@ logs/
 venv/
 env/
 .venv/
+
+# WhatsApp session data (always keep secure, only check-in the encrypted .enc file)
+data/baileys_auth/

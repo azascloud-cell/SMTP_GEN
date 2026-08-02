@@ -4,6 +4,7 @@ const pino = require('pino');
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -15,6 +16,52 @@ fs.mkdirSync(authDir, { recursive: true });
 // Global socket and connection state variables to avoid duplicate handler bug on reconnect
 let sock = null;
 let isConnected = false;
+
+// Session Auto-Persistence to Git to prevent session loss on restart
+let saveSessionTimeout = null;
+
+function saveSessionToGit() {
+    console.log("Saving encrypted Baileys session to Git repository...");
+    const cmd = `
+        if [ ! -f data/baileys_auth/creds.json ]; then
+            echo "No credentials found in data/baileys_auth/creds.json, skipping save."
+            exit 0
+        fi
+
+        # Zip and encrypt the auth directory using TELEGRAM_BOT_TOKEN as the passphrase
+        zip -q -r data/baileys_auth.zip data/baileys_auth
+        openssl enc -aes-256-cbc -salt -pbkdf2 -in data/baileys_auth.zip -out data/baileys_auth.enc -pass pass:"$TELEGRAM_BOT_TOKEN"
+        rm -f data/baileys_auth.zip
+
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add data/baileys_auth.enc
+
+        if [ -n "$(git status --porcelain data/baileys_auth.enc)" ]; then
+            git commit -m "chore: update encrypted whatsapp session [skip ci]"
+            git pull --rebase origin main || true
+            git push origin HEAD:main
+            echo "Encrypted session state successfully pushed to Git!"
+        else
+            echo "No changes in encrypted session state."
+        fi
+    `;
+    exec(cmd, (err, stdout, stderr) => {
+        if (err) {
+            console.error("Failed to save session to Git:", err);
+            return;
+        }
+        console.log("saveSessionToGit output:", stdout);
+        if (stderr) console.error("saveSessionToGit stderr:", stderr);
+    });
+}
+
+function debouncedSaveSession() {
+    if (saveSessionTimeout) clearTimeout(saveSessionTimeout);
+    saveSessionTimeout = setTimeout(() => {
+        saveSessionToGit();
+    }, 15000); // 15s debounce to group startup/pairing writes together
+}
 
 function sendTelegramMessage(text) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -68,7 +115,10 @@ async function startWA() {
     // Update global reference
     sock = currentSock;
 
-    currentSock.ev.on('creds.update', saveCreds);
+    currentSock.ev.on('creds.update', () => {
+        saveCreds();
+        debouncedSaveSession();
+    });
 
     currentSock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -91,6 +141,7 @@ async function startWA() {
             isConnected = true;
             console.log("WhatsApp connection is open and active!");
             sendTelegramMessage("🔗 *WhatsApp Checker: Terhubung!* ✅\nBot siap melakukan pengecekan nomor.");
+            debouncedSaveSession();
         }
     });
 
