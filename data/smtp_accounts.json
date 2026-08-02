@@ -8,15 +8,5 @@
     "imap_port": 993,
     "verified": true,
     "imap_ok": true
-  },
-  "azascloud@gmail.com": {
-    "password": "mvve pjxu omye sfnl",
-    "provider": "gmail.com",
-    "smtp_host": "smtp.gmail.com",
-    "smtp_port": 587,
-    "imap_host": "imap.gmail.com",
-    "imap_port": 993,
-    "verified": true,
-    "imap_ok": true
   }
 }
