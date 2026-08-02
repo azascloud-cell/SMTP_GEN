@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 
 OPENCODE_API_KEY = os.environ.get("OPENCODE_API_KEY", "")
-MODEL_NAME = os.environ.get("OPENCODE_MODEL", "opencode-zen/deepseek-v4-flash-free")
+MODEL_NAME = os.environ.get("OPENCODE_MODEL", "opencode/deepseek-v4-flash-free")
 
 FILES_TO_AUDIT = [
     "bot/number_manager.py",

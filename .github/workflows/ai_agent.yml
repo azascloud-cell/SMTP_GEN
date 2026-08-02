@@ -27,7 +27,7 @@ jobs:
       - name: 🚀 Run AI Audit & Fix
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          OPENCODE_MODEL: "opencode-zen/deepseek-v4-flash-free"
+          OPENCODE_MODEL: "opencode/deepseek-v4-flash-free"
         run: |
           python bot/ai_agent.py
 
