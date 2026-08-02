@@ -138,6 +138,43 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
     Kirim email banding ke support@support.whatsapp.com.
     smtp_account: dict dengan keys email/username, password, smtp_host, smtp_port
     """
+    if smtp_account.get("provider") == "MailerSend":
+        api_key = smtp_account.get("password")
+        sender_email = smtp_account.get("username") or smtp_account.get("email")
+
+        # Prepare MailerSend HTTP POST request payload
+        url = "https://api.mailersend.com/v1/email"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        body_text = APPEAL_TEMPLATE.format(phone=phone)
+        payload = {
+            "from": {
+                "email": sender_email,
+                "name": "WhatsApp Ban Appeal"
+            },
+            "to": [
+                {
+                    "email": WHATSAPP_SUPPORT,
+                    "name": "WhatsApp Support"
+                }
+            ],
+            "subject": f"WhatsApp Ban Appeal - {phone}",
+            "text": body_text
+        }
+
+        try:
+            import requests
+            r = requests.post(url, headers=headers, json=payload, timeout=20)
+            if r.status_code in (200, 201, 202):
+                logger.info(f"Email banding terkirim via MailerSend: {sender_email} → {WHATSAPP_SUPPORT}")
+                return {"success": True, "from": sender_email}
+            else:
+                return {"success": False, "error": f"MailerSend API returned HTTP {r.status_code}: {r.text}"}
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "error": f"MailerSend send error: {e}"}
+
     login, password = _get_smtp_login(smtp_account)
     host = smtp_account["smtp_host"]
     port = int(smtp_account["smtp_port"])

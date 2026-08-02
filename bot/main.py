@@ -21,7 +21,10 @@ from number_manager import (
     status_emoji,
     status_label,
 )
-from smtp_auto_generator import MAILTRAP_API_TOKEN, auto_gen_smtp
+from smtp_auto_generator import (
+    MAILERSEND_API_KEY,
+    auto_gen_smtp,
+)
 from smtp_generator import SMTPGenerator
 from smtp_manager import SMTPManager
 from telegram import Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -89,11 +92,6 @@ def main_menu_keyboard():
     rows.append([InlineKeyboardButton("🤖 Auto Generate SMTP",             callback_data="autogen_smtp")])
     rows.append([InlineKeyboardButton("➕ Tambah SMTP Manual",              callback_data="add_smtp_info")])
     rows.append([InlineKeyboardButton("📂 Akun SMTP",                      callback_data="list_smtp")])
-    # Mailtrap & Mailpit
-    rows.append([
-        InlineKeyboardButton("📬 Mailtrap SMTP", callback_data="mailtrap_info"),
-        InlineKeyboardButton("🔩 Mailpit SMTP",  callback_data="mailpit_info"),
-    ])
     # WhatsApp Fix
     rows.append([InlineKeyboardButton("🔧 WhatsApp Fix (/fix +nomor)",     callback_data="fix_info")])
     # Update & Info
@@ -308,88 +306,6 @@ async def cmd_listsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]))
 
 
-async def cmd_addmailtrap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tambah Mailtrap SMTP. Format: /addmailtrap username|password"""
-    args_raw = " ".join(context.args).strip() if context.args else ""
-    if "|" not in args_raw:
-        await update.message.reply_text(
-            "📬 *Tambah Mailtrap SMTP*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Format: `/addmailtrap username|password`\n\n"
-            "📌 Cara dapat credentials:\n"
-            "1️⃣ Buka *mailtrap.io* → Login\n"
-            "2️⃣ Pilih Inboxes → pilih inbox\n"
-            "3️⃣ Tab *SMTP Settings*\n"
-            "4️⃣ Salin *Username* dan *Password*\n\n"
-            "Contoh:\n"
-            "`/addmailtrap abc123def456|xyz789ghi012`",
-            parse_mode="Markdown",
-        )
-        return
-    parts    = args_raw.split("|", 1)
-    username = parts[0].strip()
-    password = parts[1].strip()
-    if not username or not password:
-        await update.message.reply_text("⚠️ Format: `/addmailtrap username|password`", parse_mode="Markdown")
-        return
-
-    msg = await update.message.reply_text(
-        f"🔄 Verifikasi Mailtrap `{username}`...", parse_mode="Markdown"
-    )
-    result = await asyncio.to_thread(manager.add_mailtrap, username, password)
-    text   = fmt_smtp_add_ok(result) if result["success"] else fmt_smtp_add_fail(result)
-    kb     = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📂 Lihat Akun", callback_data="list_smtp")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
-    ])
-    await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-
-
-async def cmd_addmailpit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tambah Mailpit SMTP. Format: /addmailpit host:port  atau  /addmailpit host:port|user|pass"""
-    args_raw = " ".join(context.args).strip() if context.args else ""
-    if not args_raw:
-        await update.message.reply_text(
-            "🔩 *Tambah Mailpit SMTP*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Format tanpa auth:\n"
-            "`/addmailpit host:port`\n\n"
-            "Format dengan auth:\n"
-            "`/addmailpit host:port|username|password`\n\n"
-            "Contoh:\n"
-            "`/addmailpit mail.example.com:1025`\n"
-            "`/addmailpit mail.example.com:1025|user|pass`\n\n"
-            "💡 Default Mailpit: port 1025, tanpa auth.",
-            parse_mode="Markdown",
-        )
-        return
-
-    parts    = args_raw.split("|")
-    host_port = parts[0].strip()
-    username  = parts[1].strip() if len(parts) > 1 else ""
-    password  = parts[2].strip() if len(parts) > 2 else ""
-
-    if ":" in host_port:
-        host_str, port_str = host_port.rsplit(":", 1)
-        try:
-            port = int(port_str)
-        except ValueError:
-            await update.message.reply_text("⚠️ Port tidak valid. Contoh: `mail.example.com:1025`", parse_mode="Markdown")
-            return
-    else:
-        host_str = host_port
-        port     = 1025
-
-    msg = await update.message.reply_text(
-        f"🔄 Verifikasi Mailpit `{host_str}:{port}`...", parse_mode="Markdown"
-    )
-    result = await asyncio.to_thread(manager.add_mailpit, host_str, port, username, password)
-    text   = fmt_smtp_add_ok(result) if result["success"] else fmt_smtp_add_fail(result)
-    kb     = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📂 Lihat Akun", callback_data="list_smtp")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
-    ])
-    await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def cmd_delsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,12 +373,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Langsung generate & cek inbox langsung di dalam bot!\n\n"
         "➕ *SMTP Manual* (Gmail/Yahoo)\n"
         "`/addsmtp email|app_password`\n\n"
-        "📬 *Mailtrap SMTP* (sandbox testing)\n"
-        "`/addmailtrap username|password`\n"
-        "Credentials dari mailtrap.io → Inboxes → SMTP Settings\n\n"
-        "🔩 *Mailpit SMTP* (self-hosted)\n"
-        "`/addmailpit host:port`\n"
-        "`/addmailpit host:port|user|pass`\n\n"
         "🔧 *WhatsApp Fix*\n"
         "`/fix +628xxxxxxxx`\n"
         "Kirim email banding ke WhatsApp support\n\n"
@@ -470,8 +380,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start — Menu utama\n"
         "/generate — Email temp\n"
         "/addsmtp — Tambah SMTP Gmail/Yahoo\n"
-        "/addmailtrap — Tambah Mailtrap SMTP\n"
-        "/addmailpit — Tambah Mailpit SMTP\n"
         "/listsmtp — Lihat akun SMTP\n"
         "/delsmtp — Hapus akun SMTP\n"
         "/fix — Banding ban WhatsApp\n"
@@ -549,7 +457,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── WhatsApp Fix Command ───────────────────────────────────────────────────────
 async def cmd_autogen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Auto-generate SMTP via backend (Mail.tm atau Mailtrap)."""
+    """Auto-generate SMTP/API via backend (Mail.tm atau MailerSend)."""
     arg = " ".join(context.args).strip().lower() if context.args else "auto"
     msg = await update.message.reply_text(
         f"⏳ *Auto-generate SMTP...*\n"
@@ -564,7 +472,7 @@ async def cmd_autogen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ *Generate SMTP Gagal*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"⚠️ {result.get('error', 'Unknown error')}\n\n"
-            f"💡 Coba provider lain: /autogen mailtm",
+            f"💡 Coba provider lain: /autogen mailtm atau mailersend",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Menu", callback_data="back_main")
@@ -1360,54 +1268,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # ── SMTP Manual ───────────────────────────────────────────────────────────
-    elif data == "mailtrap_info":
-        await query.edit_message_text(
-            "📬 *Mailtrap SMTP*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Mailtrap adalah layanan **testing SMTP** gratis.\n"
-            "Email yang dikirim ditangkap di inbox sandbox, tidak diteruskan ke tujuan asli.\n\n"
-            "📌 *Cara dapat credentials:*\n"
-            "1️⃣ Daftar/login di *mailtrap.io*\n"
-            "2️⃣ Buka menu *Email Testing → Inboxes*\n"
-            "3️⃣ Klik inbox kamu → tab *SMTP Settings*\n"
-            "4️⃣ Pilih integrasi *Python / SMTP*\n"
-            "5️⃣ Salin *Username* dan *Password*\n\n"
-            "🔧 *Lalu kirim di chat:*\n"
-            "`/addmailtrap username|password`\n\n"
-            "📋 *Detail Server Mailtrap:*\n"
-            "Host: `sandbox.smtp.mailtrap.io`\n"
-            "Port: `2525` (atau 465, 587)\n"
-            "Enkripsi: STARTTLS / SSL",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Kembali", callback_data="back_main")],
-            ]),
-        )
-
-    elif data == "mailpit_info":
-        await query.edit_message_text(
-            "🔩 *Mailpit SMTP*\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Mailpit adalah email catcher **self-hosted** (seperti MailHog).\n"
-            "Email ditangkap di web UI Mailpit, tidak dikirim ke server asli.\n\n"
-            "📌 *Setup Mailpit (server kamu):*\n"
-            "• Download: `github.com/axllent/mailpit`\n"
-            "• Jalankan: `./mailpit`\n"
-            "• Default SMTP port: *1025*\n"
-            "• Default web UI: `http://0.0.0.0:8025`\n\n"
-            "🔧 *Tambah tanpa auth:*\n"
-            "`/addmailpit host:port`\n\n"
-            "🔧 *Tambah dengan auth:*\n"
-            "`/addmailpit host:port|username|password`\n\n"
-            "Contoh:\n"
-            "`/addmailpit mail.example.com:1025`\n"
-            "`/addmailpit 192.168.1.10:1025|admin|secret`",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Kembali", callback_data="back_main")],
-            ]),
-        )
-
     elif data == "add_smtp_info":
         await query.edit_message_text(
             "➕ *Tambah SMTP Manual*\n"
@@ -1546,23 +1406,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "🤖 *Auto Generate SMTP*\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Bot akan otomatis membuat akun SMTP via backend — "
+            "Bot akan otomatis membuat akun SMTP/API via backend — "
             "tanpa perlu input manual apapun.\n\n"
             "📌 *Pilih provider:*\n\n"
             "🌐 *Mail.tm* — gratis, tanpa token, langsung jadi\n"
-            "📬 *Mailtrap* — butuh `MAILTRAP_API_TOKEN` di env\n\n"
+            "📬 *MailerSend* — butuh `MAILERSEND_API_KEY` & `MAILERSEND_SENDER_EMAIL` di env\n\n"
             "Klik tombol di bawah untuk mulai generate:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🌐 Generate via Mail.tm",   callback_data="autogen_mailtm")],
-                [InlineKeyboardButton("📬 Generate via Mailtrap",  callback_data="autogen_mailtrap")],
+                [InlineKeyboardButton("📬 Generate via MailerSend",  callback_data="autogen_mailersend")],
                 [InlineKeyboardButton("🔙 Kembali",                callback_data="back_main")],
             ]),
         )
 
-    elif data in ("autogen_mailtm", "autogen_mailtrap"):
-        provider = "mailtm" if data == "autogen_mailtm" else "mailtrap"
-        pname    = "Mail.tm" if provider == "mailtm" else "Mailtrap"
+    elif data in ("autogen_mailtm", "autogen_mailersend"):
+        provider = "mailtm" if data == "autogen_mailtm" else "mailersend"
+        pname    = "Mail.tm" if provider == "mailtm" else "MailerSend"
         await query.edit_message_text(
             f"⏳ *Auto-generate SMTP via {pname}...*\nMohon tunggu...",
             parse_mode="Markdown",
@@ -1573,7 +1433,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ *Generate Gagal*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"⚠️ {result.get('error', 'Unknown error')}\n\n"
-                f"💡 {'Pastikan `MAILTRAP_API_TOKEN` diset di env.' if provider == 'mailtrap' else 'Coba lagi atau pilih provider lain.'}",
+                f"💡 {'Pastikan `MAILERSEND_API_KEY` dan `MAILERSEND_SENDER_EMAIL` diset di env.' if provider == 'mailersend' else 'Coba lagi atau pilih provider lain.'}",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Coba Lagi",  callback_data=data)],
@@ -1670,7 +1530,7 @@ async def send_startup_notification(bot: Bot):
         return
     checker_ok = is_checker_connected()
     ch_info    = f"✅ WA Checker: `{WA_CHECKER_URL}`" if checker_ok else "⚠️ WA Checker belum setup"
-    mt_status  = "✅ MAILTRAP_API_TOKEN tersedia" if MAILTRAP_API_TOKEN else "⚠️ MAILTRAP_API_TOKEN belum diset"
+    ms_status  = "✅ MAILERSEND_API_KEY tersedia" if MAILERSEND_API_KEY else "⚠️ MAILERSEND_API_KEY belum diset"
     try:
         await bot.send_message(
             chat_id=ADMIN_CHAT,
@@ -1681,7 +1541,7 @@ async def send_startup_notification(bot: Bot):
                 f"🆔 *Run ID:* `{RUN_ID}`\n"
                 f"📦 *Repo:* `{REPO}`\n"
                 f"📱 {ch_info}\n"
-                f"📬 {mt_status}\n"
+                f"📬 {ms_status}\n"
                 f"📧 Provider Temp: {len(generator.list_providers())}\n"
                 f"📂 Akun SMTP: {manager.count()}\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1702,8 +1562,6 @@ def main():
     app.add_handler(CommandHandler("addsmtp",     cmd_addsmtp))
     app.add_handler(CommandHandler("listsmtp",    cmd_listsmtp))
     app.add_handler(CommandHandler("delsmtp",     cmd_delsmtp))
-    app.add_handler(CommandHandler("addmailtrap", cmd_addmailtrap))
-    app.add_handler(CommandHandler("addmailpit",  cmd_addmailpit))
     app.add_handler(CommandHandler("status",      cmd_status))
     app.add_handler(CommandHandler("help",        cmd_help))
     app.add_handler(CommandHandler("fix",         cmd_fix))
@@ -1720,8 +1578,6 @@ def main():
             BotCommand("start",       "Menu utama"),
             BotCommand("generate",    "📧 Email sementara (receive only)"),
             BotCommand("addsmtp",     "➕ Tambah SMTP manual (Gmail/Yahoo)"),
-            BotCommand("addmailtrap", "📬 Tambah Mailtrap SMTP (testing)"),
-            BotCommand("addmailpit",  "🔩 Tambah Mailpit SMTP (self-hosted)"),
             BotCommand("listsmtp",    "📂 Lihat semua akun SMTP"),
             BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
             BotCommand("fix",         "🔧 Banding ban WhatsApp"),
