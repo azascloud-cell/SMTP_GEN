@@ -18,10 +18,14 @@ jobs:
     name: Run Telegram Bot
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    permissions:
+      contents: write
 
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT || github.token }}
 
       - name: 🐍 Setup Python 3.11
         uses: actions/setup-python@v5
@@ -39,6 +43,20 @@ jobs:
 
       - name: 📦 Install Node dependencies
         run: npm install
+
+      - name: 🔐 Restore Encrypted WhatsApp Session
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          if [ -f data/baileys_auth.enc ]; then
+            echo "🔐 Found encrypted WhatsApp session. Restoring..."
+            openssl enc -d -aes-256-cbc -pbkdf2 -in data/baileys_auth.enc -out data/baileys_auth.zip -pass pass:"$TELEGRAM_BOT_TOKEN"
+            unzip -q -o data/baileys_auth.zip
+            rm -f data/baileys_auth.zip
+            echo "✅ Encrypted WhatsApp session successfully restored!"
+          else
+            echo "ℹ️ No encrypted WhatsApp session found. A fresh session will be started."
+          fi
 
       - name: 🔗 Start Baileys WA Checker
         env:

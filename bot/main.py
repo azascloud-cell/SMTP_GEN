@@ -15,6 +15,8 @@ from number_files import delete_file, detect_region, list_files, load_file, save
 from number_manager import (
     WA_CHECKER_URL,
     check_numbers,
+    format_gacha_method,
+    get_country_info,
     is_checker_connected,
     parse_numbers_from_text,
     pick_random,
@@ -1127,7 +1129,104 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("copy_num_"):
         phone = data[len("copy_num_"):]
-        await query.answer(f"Nomor: {phone}", show_alert=True)
+        c_info = get_country_info(phone)
+        flag = c_info["flag"]
+        name = c_info["name"]
+
+        await query.edit_message_text(f"⏳ Membuka detail nomor {phone}...")
+        results = await asyncio.to_thread(check_numbers, [phone])
+        status_reg = results[0]["registered"]
+        emoji = status_emoji(status_reg)
+        lbl = status_label(status_reg)
+
+        method_text = format_gacha_method(phone)
+
+        # We will keep the detail message clear and elegant
+        detail_msg = (
+            f"📱 *Detail Nomor & Status WA*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📞 *Nomor:* `{phone}`\n"
+            f"🌍 *Negara:* {flag} {name}\n"
+            f"📊 *Status WA:* {emoji} *{lbl}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{method_text}"
+        )
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔧 Fix (Banding Ban)", callback_data=f"fix_num_{phone}")],
+            [InlineKeyboardButton("🔙 Kembali ke Hasil", callback_data="num_reroll")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+        ])
+        await query.edit_message_text(detail_msg, parse_mode="Markdown", reply_markup=kb)
+
+    elif data.startswith("fix_num_"):
+        phone = data[len("fix_num_"):]
+
+        global _last_smtp_index
+        accounts = manager.list_accounts()
+        verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
+        if not verified:
+            await query.edit_message_text(
+                "❌ *Tidak ada akun SMTP yang aktif!*\n\n"
+                "Tambah dulu dengan:\n"
+                "`/addsmtp email@gmail.com|app_password`\n\n"
+                "⚠️ Catatan: Akun SMTP otomatis (seperti Mail.tm) tidak bisa dipakai kirim email banding.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+            )
+            return
+
+        idx = _last_smtp_index % len(verified)
+        smtp_email = verified[idx]["email"]
+        _last_smtp_index = (idx + 1) % len(verified)
+
+        smtp_full  = manager.get_account(smtp_email)
+        if not smtp_full:
+            await query.edit_message_text("❌ Gagal ambil data akun SMTP.", parse_mode="Markdown")
+            return
+
+        await query.edit_message_text(
+            f"📤 *Mengirim email banding...*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor: `{phone}`\n"
+            f"📧 SMTP: `{smtp_email}`\n"
+            f"Target: `support@support.whatsapp.com`",
+            parse_mode="Markdown"
+        )
+
+        sent_at = time.time()
+        result  = await asyncio.to_thread(send_appeal_email, smtp_full, phone)
+
+        if not result["success"]:
+            await query.edit_message_text(
+                f"❌ *Gagal Kirim Email Banding*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 Nomor: `{phone}`\n"
+                f"⚠️ Error: {result.get('error', 'Unknown')}\n\n"
+                f"💡 Cek App Password atau coba akun SMTP lain.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+            )
+            return
+
+        add_pending(chat_id, phone, smtp_email, sent_at)
+
+        await query.edit_message_text(
+            f"📬 *EMAIL BANDING TERKIRIM!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor : `{phone}`\n"
+            f"📧 SMTP  : `{smtp_email}`\n"
+            f"✅ Status : Banding berhasil terkirim!\n\n"
+            f"🤖 *INFO*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Bot akan monitor inbox secara otomatis.\n"
+            f"Kamu akan dinotifikasi jika ada balasan dari WhatsApp.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Kembali ke Detail", callback_data=f"copy_num_{phone}")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+            ])
+        )
 
     # ── Email Temp ────────────────────────────────────────────────────────────
     elif data == "gen":

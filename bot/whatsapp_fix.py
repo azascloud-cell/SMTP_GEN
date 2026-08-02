@@ -335,6 +335,14 @@ def check_whatsapp_reply(smtp_account: dict, since_timestamp: float) -> dict | N
     3. Kalau 0 hasil, coba broad: ALL SINCE <date>  (filter di Python)
     4. Return dict {subject, body, from, date} atau None jika tidak ada.
     """
+    provider = smtp_account.get("provider", "")
+    email_addr = smtp_account.get("email", "")
+
+    # Skip checking IMAP for MailerSend since it does not have IMAP capability
+    if provider == "MailerSend" or "mailersend" in email_addr.lower() or "mailersend" in smtp_account.get("imap_host", "").lower():
+        logger.debug("IMAP skip — MailerSend does not support IMAP.")
+        return None
+
     imap_host = smtp_account.get("imap_host", "")
     imap_port = int(smtp_account.get("imap_port", 993))
 
