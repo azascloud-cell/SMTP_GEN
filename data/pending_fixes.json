@@ -317,6 +317,6 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785682178.0604014,
     "notified": false,
-    "check_count": 0
+    "check_count": 1
   }
 }
