@@ -1,0 +1,45 @@
+name: 🤖 AI Code Self-Improvement Agent
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every Sunday at midnight
+    - cron: '0 0 * * 0'
+
+jobs:
+  ai-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install requests
+
+      - name: 🚀 Run AI Audit & Fix
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: "opencode-zen/deepseek-v4-flash-free"
+        run: |
+          python bot/ai_agent.py
+
+      - name: 💾 Commit & Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "🤖 AI: Auto-improved bot code and resolved errors via OpenCode Zen"
+            git push
+          else
+            echo "No changes to commit."
+          fi
