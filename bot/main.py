@@ -1146,8 +1146,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📱 *Detail Nomor & Status WA*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📞 *Nomor:* `{phone}`\n"
-            f"🌍 *Negara:* {flag} {name}\n"
+            f"🌍 *Negara:* {flag} {name} (+{c_info['code']})\n"
             f"📊 *Status WA:* {emoji} *{lbl}*\n"
+            f"⏰ *Timezone:* {c_info['timezone']}\n"
+            f"🗣️ *Bahasa Device/WA:* {c_info['lang']}\n"
+            f"🌐 *Saran Server VPN:* {c_info['vpn']}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{method_text}"
         )

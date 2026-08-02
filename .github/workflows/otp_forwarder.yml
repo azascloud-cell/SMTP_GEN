@@ -1,0 +1,34 @@
+name: 🛫 XclusoR OTP Forwarder Bot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-forwarder:
+    name: Run OTP Forwarder
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 📦 Install Python dependencies
+        run: |
+          pip install requests
+
+      - name: 🚀 Run OTP Forwarder
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          XCLUSOR_API_KEY: ${{ secrets.XCLUSOR_API_KEY }}
+          XCLUSOR_API_URL: ${{ secrets.XCLUSOR_API_URL }}
+        run: |
+          cd otp_forwarder
+          bash run.sh
