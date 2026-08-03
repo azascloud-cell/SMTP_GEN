@@ -28,6 +28,54 @@ logger = logging.getLogger(__name__)
 
 # File simpan pending fix requests
 PENDING_FILE = Path(__file__).parent / "pending_fixes.json"
+DAILY_USAGE_FILE = Path(__file__).parent / "smtp_daily_usage.json"
+
+
+def get_gmail_alias_and_increment(email: str) -> tuple[str, int]:
+    """
+    Jika email adalah Gmail, return alias (e.g. user+count@gmail.com) dan count hari ini.
+    Mereset count ke 1 jika ganti hari. Capped/rolled over at 500.
+    Jika bukan Gmail, return email asal dan 0.
+    """
+    email_lower = email.lower().strip()
+    if "@gmail.com" not in email_lower:
+        return email, 0
+
+    # Get base email to share counter between my.user@gmail.com and my.user+foo@gmail.com
+    local_part, domain = email_lower.split("@", 1)
+    base_local = local_part.split("+")[0]
+    base_email = f"{base_local}@{domain}"
+
+    data = _gh_load(DAILY_USAGE_FILE)
+
+    # Use timezone-aware UTC date to be reliable across container restarts
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    entry = data.get(base_email, {})
+    last_date = entry.get("date", "")
+    count = entry.get("count", 0)
+
+    if last_date != today_str:
+        count = 1
+    else:
+        count += 1
+        if count > 500:
+            count = 1
+
+    # Update and save
+    data[base_email] = {
+        "date": today_str,
+        "count": count
+    }
+    _gh_save(DAILY_USAGE_FILE, data)
+
+    # Construct alias using original case of base_local
+    orig_local_part, orig_domain = email.split("@", 1)
+    orig_base_local = orig_local_part.split("+")[0]
+    alias_email = f"{orig_base_local}+{count}@{orig_domain}"
+
+    return alias_email, count
+
 
 WHATSAPP_SUPPORT   = "support@support.whatsapp.com"
 WHATSAPP_KEYWORDS  = [
@@ -146,14 +194,20 @@ def _get_smtp_login(smtp_account: dict) -> tuple[str, str]:
     return login, smtp_account.get("password", "")
 
 
-def send_appeal_email(smtp_account: dict, phone: str) -> dict:
+def send_appeal_email(smtp_account: dict, phone: str, custom_subject: str = None, custom_body: str = None) -> dict:
     """
     Kirim email banding ke support@support.whatsapp.com.
     smtp_account: dict dengan keys email/username, password, smtp_host, smtp_port
     """
+    original_sender = smtp_account.get("email", "")
+    alias_email, alias_count = get_gmail_alias_and_increment(original_sender)
+
+    subject = custom_subject or f"WhatsApp Ban Appeal - {phone}"
+    body = custom_body or APPEAL_TEMPLATE.format(phone=phone)
+
     if smtp_account.get("provider") == "MailerSend":
         api_key = smtp_account.get("password")
-        sender_email = smtp_account.get("username") or smtp_account.get("email")
+        sender_email = alias_email if alias_email else (original_sender or smtp_account.get("username"))
 
         # Prepare MailerSend HTTP POST request payload
         url = "https://api.mailersend.com/v1/email"
@@ -161,7 +215,6 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}"
         }
-        body_text = APPEAL_TEMPLATE.format(phone=phone)
         payload = {
             "from": {
                 "email": sender_email,
@@ -173,8 +226,8 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
                     "name": "WhatsApp Support"
                 }
             ],
-            "subject": f"WhatsApp Ban Appeal - {phone}",
-            "text": body_text
+            "subject": subject,
+            "text": body
         }
 
         try:
@@ -182,7 +235,12 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
             r = requests.post(url, headers=headers, json=payload, timeout=20)
             if r.status_code in (200, 201, 202):
                 logger.info(f"Email banding terkirim via MailerSend: {sender_email} → {WHATSAPP_SUPPORT}")
-                return {"success": True, "from": sender_email}
+                return {
+                    "success": True,
+                    "from": original_sender,
+                    "alias": sender_email,
+                    "count": alias_count
+                }
             else:
                 return {"success": False, "error": f"MailerSend API returned HTTP {r.status_code}: {r.text}"}
         except Exception as e:  # noqa: BLE001
@@ -193,13 +251,10 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
     port = int(smtp_account["smtp_port"])
 
     # Sender address: kalau ada username/email valid pakai itu, otherwise generate
-    sender_email = smtp_account.get("email", login)
+    sender_email = alias_email if alias_email else smtp_account.get("email", login)
     if sender_email.startswith(("mailtrap:", "mailpit:")):
         # Gunakan format username@host untuk From
         sender_email = f"{login}@{host.replace('smtp.', '').replace('sandbox.smtp.', '')}"
-
-    subject = f"WhatsApp Ban Appeal - {phone}"
-    body    = APPEAL_TEMPLATE.format(phone=phone)
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -219,7 +274,12 @@ def send_appeal_email(smtp_account: dict, phone: str) -> dict:
         server.sendmail(sender_email, WHATSAPP_SUPPORT, msg.as_string())
         server.quit()
         logger.info(f"Email banding terkirim: {sender_email} → {WHATSAPP_SUPPORT}")
-        return {"success": True, "from": sender_email}
+        return {
+            "success": True,
+            "from": original_sender,
+            "alias": sender_email,
+            "count": alias_count
+        }
     except smtplib.SMTPAuthenticationError:
         return {"success": False, "error": "Auth gagal — periksa email/password SMTP."}
     except Exception as e:  # noqa: BLE001
