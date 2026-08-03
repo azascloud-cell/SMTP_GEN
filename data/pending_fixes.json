@@ -462,5 +462,14 @@
     "notified": true,
     "check_count": 0,
     "user_info": "@Azascrack"
+  },
+  "6874843931_+249120721558_1785758399": {
+    "chat_id": 6874843931,
+    "phone": "+249120721558",
+    "smtp_email": "azascloud@gmail.com",
+    "sent_at": 1785758399.2164097,
+    "notified": false,
+    "check_count": 0,
+    "user_info": "@Azascrack"
   }
 }
