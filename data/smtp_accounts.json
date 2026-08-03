@@ -40,5 +40,18 @@
       "verified": true,
       "imap_ok": true
     }
+  },
+  "mailersend:test-q3enl6k932742vwr.mlsender.net": {
+    "password": "mlsn.d6f22d3760a89d58ceb637120911bcf040a2df1fb0c666722fa73eb79046b7f7",
+    "username": "test-q3enl6k932742vwr.mlsender.net",
+    "provider": "MailerSend",
+    "smtp_host": "api.mailersend.com",
+    "smtp_port": 443,
+    "imap_host": "api.mailersend.com",
+    "imap_port": 443,
+    "verified": true,
+    "imap_ok": true,
+    "auto_gen": true,
+    "note": "MailerSend API (Sender: test-q3enl6k932742vwr.mlsender.net)"
   }
 }
