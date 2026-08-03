@@ -327,5 +327,14 @@
     "notified": true,
     "check_count": 1,
     "user_info": "@Azascrack"
+  },
+  "6874843931_+62881012467425_1785728046": {
+    "chat_id": 6874843931,
+    "phone": "+62881012467425",
+    "smtp_email": "azascloud@gmail.com",
+    "sent_at": 1785728046.8726823,
+    "notified": false,
+    "check_count": 0,
+    "user_info": "@Azascrack"
   }
 }
