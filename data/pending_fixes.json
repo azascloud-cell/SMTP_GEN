@@ -351,7 +351,7 @@
     "phone": "+50942241523",
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785734361.183152,
-    "notified": false,
+    "notified": true,
     "check_count": 1,
     "user_info": "@Azascrack"
   }
