@@ -423,14 +423,15 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_donasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     qris_path = get_qris_path()
 
     text = (
-        f"💖 *Dukung Pengembangan Bot* 💖\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Halo! Jika bot ini membantu Anda dalam mengelola SMTP dan memulihkan nomor WhatsApp yang dibanned, Anda dapat memberikan dukungan/donasi kepada developer agar server tetap berjalan aktif.\n\n"
-        f"Silakan scan QRIS di atas menggunakan e-wallet (Dana, OVO, GoPay, LinkAja) atau Mobile Banking Anda.\n\n"
-        f"Terima kasih banyak atas kebaikan dan dukungan Anda! 🙏✨"
+        "💖 *Dukung Pengembangan Bot* 💖\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Halo! Jika bot ini membantu Anda dalam mengelola SMTP dan memulihkan nomor WhatsApp yang dibanned, Anda dapat memberikan dukungan/donasi kepada developer agar server tetap berjalan aktif.\n\n"
+        "Silakan scan QRIS di atas menggunakan e-wallet (Dana, OVO, GoPay, LinkAja) atau Mobile Banking Anda.\n\n"
+        "Terima kasih banyak atas kebaikan dan dukungan Anda! 🙏✨"
     )
 
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
@@ -438,40 +439,50 @@ async def cmd_donasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if qris_path and qris_path.exists():
             with open(qris_path, "rb") as photo:
-                if update.message:
-                    await update.message.reply_photo(
-                        photo=photo,
-                        caption=text,
-                        parse_mode="Markdown",
-                        reply_markup=kb
-                    )
-                else:
-                    await update.callback_query.message.reply_photo(
-                        photo=photo,
-                        caption=text,
-                        parse_mode="Markdown",
-                        reply_markup=kb
-                    )
-                    await update.callback_query.delete_message()
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    caption=text,
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+                # Jika dipicu dari callback query, hapus pesan sebelumnya dengan aman
+                if update.callback_query:
+                    try:
+                        await update.callback_query.message.delete()
+                    except Exception:
+                        pass
         else:
-            if update.message:
-                await update.message.reply_text(
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
                     text + "\n\n*(QRIS Image tidak ditemukan, silakan hubungi developer)*",
                     parse_mode="Markdown",
                     reply_markup=kb
                 )
             else:
-                await update.callback_query.edit_message_text(
+                await update.message.reply_text(
                     text + "\n\n*(QRIS Image tidak ditemukan, silakan hubungi developer)*",
                     parse_mode="Markdown",
                     reply_markup=kb
                 )
     except Exception as e:
         logger.error(f"Failed to send QRIS photo: {e}")
-        if update.message:
-            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+        if update.callback_query:
+            try:
+                await update.callback_query.edit_message_text(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
         else:
-            await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1005,7 +1016,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "num_info":
         # Tampilkan daftar file tersimpan + opsi upload baru
         await query.edit_message_text("⏳ Memuat daftar file...")
-        files = await asyncio.to_thread(list_files)
+        files = await asyncio.to_thread(list_files, chat_id)
 
         if not files:
             await query.edit_message_text(
@@ -1087,7 +1098,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Coba load file yang terakhir digunakan user ini
             last_fname = _last_file_by_chat.get(chat_id)
             if last_fname:
-                raw_lines = await asyncio.to_thread(load_file, last_fname)
+                raw_lines = await asyncio.to_thread(load_file, last_fname, chat_id)
                 if raw_lines:
                     numbers = parse_numbers_from_text("\n".join(raw_lines))
                     if numbers:
@@ -1095,10 +1106,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         loaded_from = last_fname
             # Jika masih kosong, coba file terbaru dari seluruh storage
             if not numbers:
-                files = await asyncio.to_thread(list_files)
+                files = await asyncio.to_thread(list_files, chat_id)
                 if files:
                     for f in files:  # files sudah diurut terbaru dulu
-                        raw_lines = await asyncio.to_thread(load_file, f["filename"])
+                        raw_lines = await asyncio.to_thread(load_file, f["filename"], chat_id)
                         if raw_lines:
                             numbers = parse_numbers_from_text("\n".join(raw_lines))
                             if numbers:
@@ -1128,7 +1139,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("numfile_pick_"):
         filename = data[len("numfile_pick_"):]
         await query.edit_message_text(f"⏳ Memuat file `{filename}`...", parse_mode="Markdown")
-        raw_lines = await asyncio.to_thread(load_file, filename)
+        raw_lines = await asyncio.to_thread(load_file, filename, chat_id)
         if not raw_lines:
             await query.edit_message_text(
                 f"❌ File `{filename}` tidak ditemukan di storage.",
@@ -1172,14 +1183,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("numfile_confirm_del_"):
         filename = data[len("numfile_confirm_del_"):]
         await query.edit_message_text(f"🗑 Menghapus `{filename}`...", parse_mode="Markdown")
-        result = await asyncio.to_thread(delete_file, filename)
+        result = await asyncio.to_thread(delete_file, filename, chat_id)
         if result["success"]:
             # Bersihkan cache in-memory jika user ini memakai file ini
             if _last_file_by_chat.get(chat_id) == filename:
                 _last_file_by_chat.pop(chat_id, None)
                 _user_numbers.pop(chat_id, None)
             # Refresh daftar file
-            files = await asyncio.to_thread(list_files)
+            files = await asyncio.to_thread(list_files, chat_id)
             if not files:
                 await query.edit_message_text(
                     f"✅ File `{filename}` dihapus.\n\nBelum ada file lain tersimpan.",
@@ -1230,7 +1241,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("numfile_view_"):
         filename = data[len("numfile_view_"):]
         await query.edit_message_text(f"⏳ Memuat isi file `{filename}`...", parse_mode="Markdown")
-        raw_lines = await asyncio.to_thread(load_file, filename)
+        raw_lines = await asyncio.to_thread(load_file, filename, chat_id)
         if not raw_lines:
             await query.edit_message_text(
                 f"❌ File `{filename}` tidak ditemukan.",
@@ -1301,7 +1312,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = data[len("fix_num_"):]
 
         global _last_smtp_index
-        accounts = manager.list_accounts()
+        accounts = manager.list_accounts(chat_id)
         verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
         if not verified:
             await query.edit_message_text(
@@ -1318,7 +1329,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         smtp_email = verified[idx]["email"]
         _last_smtp_index = (idx + 1) % len(verified)
 
-        smtp_full  = manager.get_account(smtp_email)
+        smtp_full  = manager.get_account(smtp_email, chat_id)
         if not smtp_full:
             await query.edit_message_text("❌ Gagal ambil data akun SMTP.", parse_mode="Markdown")
             return
@@ -1535,7 +1546,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "list_smtp":
-        accounts = manager.list_accounts()
+        accounts = manager.list_accounts(chat_id)
         if not accounts:
             text = "📭 *Belum ada akun SMTP manual.*\n\nTambah: `/addsmtp email|password`"
         else:
@@ -1575,7 +1586,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "status":
-        checker_ok = is_checker_connected()
+        checker_ok = is_checker_connected(chat_id)
         ch_status  = "✅ Terhubung" if checker_ok else "⚠️ Belum setup"
         await query.edit_message_text(
             f"📊 *Status Bot*\n"
@@ -1740,6 +1751,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
             ]]),
         )
+
+    elif data == "donasi":
+        await cmd_donasi(update, context)
 
     elif data == "back_main":
         checker_ok = is_checker_connected(chat_id)

@@ -196,7 +196,9 @@ def save_file(original_name: str, content: str, chat_id: int, total: int) -> dic
     if not GH_PAT or not REPO:
         return {"success": False, "error": "GitHub PAT tidak tersedia."}
 
-    filename = _sanitize(original_name)
+    # Gunakan prefix f"{chat_id}_" agar tidak terjadi tabrakan antar-user di repo
+    sanitized = _sanitize(original_name)
+    filename = f"{chat_id}_{sanitized}"
     gh_path  = FILES_DIR + filename
 
     # Cek apakah sudah ada (ambil SHA untuk update)
@@ -239,26 +241,34 @@ def save_file(original_name: str, content: str, chat_id: int, total: int) -> dic
     return {"success": True, "key": filename, "filename": filename}
 
 
-def list_files() -> list[dict]:
+def list_files(chat_id: int) -> list[dict]:
     """
-    List semua file tersimpan dari index.
+    List semua file tersimpan dari index milik user tertentu.
     Return: [{filename, original_name, total, uploaded_at, uploaded_by}]
     """
     index = _load_index()
-    files = list(index.values())
+    # Filter files belonging to chat_id
+    files = [v for v in index.values() if v.get("uploaded_by") == chat_id]
     # Sort: terbaru dulu
     files.sort(key=lambda x: x.get("uploaded_at", ""), reverse=True)
     return files
 
 
-def load_file(filename: str) -> list[str] | None:
+def load_file(filename: str, chat_id: int) -> list[str] | None:
     """
-    Load nomor dari file tersimpan di GitHub.
-    Return: list of phone numbers atau None jika tidak ada.
+    Load nomor dari file tersimpan di GitHub setelah verifikasi ownership.
+    Return: list of phone numbers atau None jika tidak ada atau bukan milik chat_id.
     """
     if not GH_PAT or not REPO:
         return None
-    filename = _sanitize(filename)
+
+    # Verifikasi kepemilikan
+    index = _load_index()
+    meta = index.get(filename)
+    if not meta or meta.get("uploaded_by") != chat_id:
+        logger.warning(f"Unauthorized or missing file load attempt: {filename} by {chat_id}")
+        return None
+
     gh_path  = FILES_DIR + filename
     code, body = _gh(_api(gh_path))
     if code != 200 or "content" not in body:
@@ -271,15 +281,20 @@ def load_file(filename: str) -> list[str] | None:
         return None
 
 
-def delete_file(filename: str) -> dict:
+def delete_file(filename: str, chat_id: int | None = None) -> dict:
     """
     Hapus file dari GitHub dan update index.
-    Return: {success, error?}
+    Jika chat_id diberikan, pastikan file tersebut milik user tersebut.
     """
     if not GH_PAT or not REPO:
         return {"success": False, "error": "GitHub PAT tidak tersedia."}
 
-    filename = _sanitize(filename)
+    if chat_id is not None:
+        index = _load_index()
+        meta = index.get(filename)
+        if not meta or meta.get("uploaded_by") != chat_id:
+            return {"success": False, "error": "File tidak ditemukan atau Anda tidak memiliki akses."}
+
     gh_path  = FILES_DIR + filename
 
     # Ambil SHA untuk delete
