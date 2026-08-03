@@ -1311,8 +1311,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"⏳ Membuka detail nomor {phone}...")
         results = await asyncio.to_thread(check_numbers, [phone], chat_id)
         status_reg = results[0]["registered"]
-        emoji = status_emoji(status_reg)
-        lbl = status_label(status_reg)
+
+        if status_reg is False:
+            status_wa_str = "[ *🟢 Fresh* | 🔴 Terdaftar (Linked) | ⚪ Terdaftar (Unlinked) ]"
+        elif status_reg is True:
+            status_wa_str = "[ 🟢 Fresh | *🔴 Terdaftar (Linked)* | ⚪ Terdaftar (Unlinked) ]"
+        else:
+            status_wa_str = "[ 🟢 Fresh | 🔴 Terdaftar (Linked) | *⚪ Terdaftar (Unlinked)* ]"
 
         method_text = format_gacha_method(phone)
 
@@ -1322,7 +1327,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📞 *Nomor:* `{phone}`\n"
             f"🌍 *Negara:* {flag} {name} (+{c_info['code']})\n"
-            f"📊 *Status WA:* {emoji} *{lbl}*\n"
+            f"📊 *Status WA:* {status_wa_str}\n"
             f"⏰ *Timezone:* {c_info['timezone']}\n"
             f"🗣️ *Bahasa Device/WA:* {c_info['lang']}\n"
             f"🌐 *Saran Server VPN:* {c_info['vpn']}\n"
@@ -1354,7 +1359,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        from bot.number_manager import get_recommended_banding_language
+        from number_manager import get_recommended_banding_language
         rec_lang = get_recommended_banding_language(phone)
 
         btn_id = "🇮🇩 Indonesia" + (" 🌟" if "Indonesia" in rec_lang else "")
