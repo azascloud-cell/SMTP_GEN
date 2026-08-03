@@ -22,6 +22,7 @@ from number_manager import (
     pick_random,
     status_emoji,
     status_label,
+    format_banding_templates,
 )
 from smtp_auto_generator import (
     MAILERSEND_API_KEY,
@@ -1298,7 +1299,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🗣️ *Bahasa Device/WA:* {c_info['lang']}\n"
             f"🌐 *Saran Server VPN:* {c_info['vpn']}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{method_text}"
+            f"{method_text}\n\n"
+            f"{format_banding_templates(phone)}"
         )
 
         kb = InlineKeyboardMarkup([
