@@ -397,7 +397,7 @@
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785738668.4362066,
     "notified": false,
-    "check_count": 0,
+    "check_count": 1,
     "user_info": "@Azascrack"
   }
 }
