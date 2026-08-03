@@ -459,8 +459,8 @@
     "phone": "+249119555994",
     "smtp_email": "mahirujawa@gmail.com",
     "sent_at": 1785757829.7085438,
-    "notified": false,
-    "check_count": 1,
+    "notified": true,
+    "check_count": 0,
     "user_info": "@Azascrack"
   }
 }
