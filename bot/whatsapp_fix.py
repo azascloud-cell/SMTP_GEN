@@ -74,7 +74,7 @@ def _save_pending(data: dict):
     _gh_save(PENDING_FILE, data)
 
 
-def add_pending(chat_id: int, phone: str, smtp_email: str, sent_at: float) -> str:
+def add_pending(chat_id: int, phone: str, smtp_email: str, sent_at: float, user_info: str = "") -> str:
     """Tambah pending fix, return key unik."""
     data = _load_pending()
     key  = f"{chat_id}_{phone}_{int(sent_at)}"
@@ -85,6 +85,7 @@ def add_pending(chat_id: int, phone: str, smtp_email: str, sent_at: float) -> st
         "sent_at":    sent_at,
         "notified":   False,
         "check_count": 0,
+        "user_info":  user_info,
     }
     _save_pending(data)
     return key

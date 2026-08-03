@@ -153,20 +153,26 @@ def verify_imap(email: str, password: str, host: str, port: int, timeout: int = 
 # ─────────────────────────────────────────────────────────────────────────────
 class SMTPManager:
 
-    def list_accounts(self) -> list[dict]:
+    def list_accounts(self, chat_id: int = None) -> list[dict]:
         data = _load()
+        if chat_id is not None:
+            user_data = data.get(str(chat_id), {})
+        else:
+            user_data = data
+
         result = []
-        for email, info in data.items():
-            result.append({
-                "email":     email,
-                "provider":  info.get("provider", "?"),
-                "smtp_host": info.get("smtp_host", "?"),
-                "smtp_port": info.get("smtp_port", "?"),
-                "verified":  info.get("verified", False),
-            })
+        for email, info in user_data.items():
+            if isinstance(info, dict):
+                result.append({
+                    "email":     email,
+                    "provider":  info.get("provider", "?"),
+                    "smtp_host": info.get("smtp_host", "?"),
+                    "smtp_port": info.get("smtp_port", "?"),
+                    "verified":  info.get("verified", False),
+                })
         return result
 
-    def add_account(self, email: str, password: str) -> dict:
+    def add_account(self, email: str, password: str, chat_id: int = None) -> dict:
         """Tambah akun SMTP baru, verifikasi dulu sebelum simpan."""
         email   = email.strip().lower()
         password = password.strip()
@@ -201,7 +207,7 @@ class SMTPManager:
 
         # Simpan akun
         data = _load()
-        data[email] = {
+        account_info = {
             "password":   password,
             "provider":   domain,
             "smtp_host":  preset["smtp_host"],
@@ -211,6 +217,15 @@ class SMTPManager:
             "verified":   True,
             "imap_ok":    imap_result["success"],
         }
+
+        if chat_id is not None:
+            chat_id_str = str(chat_id)
+            if chat_id_str not in data or not isinstance(data[chat_id_str], dict):
+                data[chat_id_str] = {}
+            data[chat_id_str][email] = account_info
+        else:
+            data[email] = account_info
+
         _save(data)
 
         return {
@@ -225,7 +240,7 @@ class SMTPManager:
             "note":     preset.get("note", ""),
         }
 
-    def add_mailtrap(self, username: str, password: str) -> dict:
+    def add_mailtrap(self, username: str, password: str, chat_id: int = None) -> dict:
         """Tambah akun Mailtrap SMTP (sandbox testing)."""
         username = username.strip()
         password = password.strip()
@@ -248,7 +263,7 @@ class SMTPManager:
         # Simpan dengan key = username (bukan email)
         key = f"mailtrap:{username}"
         data = _load()
-        data[key] = {
+        account_info = {
             "password":   password,
             "username":   username,
             "provider":   "Mailtrap",
@@ -259,6 +274,15 @@ class SMTPManager:
             "verified":   True,
             "imap_ok":    True,
         }
+
+        if chat_id is not None:
+            chat_id_str = str(chat_id)
+            if chat_id_str not in data or not isinstance(data[chat_id_str], dict):
+                data[chat_id_str] = {}
+            data[chat_id_str][key] = account_info
+        else:
+            data[key] = account_info
+
         _save(data)
 
         return {
@@ -273,7 +297,7 @@ class SMTPManager:
             "note":      preset["note"],
         }
 
-    def add_mailpit(self, host: str, port: int, username: str = "", password: str = "") -> dict:
+    def add_mailpit(self, host: str, port: int, username: str = "", password: str = "", chat_id: int = None) -> dict:
         """Tambah akun Mailpit SMTP (self-hosted testing)."""
         host     = host.strip()
         username = username.strip()
@@ -293,7 +317,7 @@ class SMTPManager:
 
         key = f"mailpit:{host}:{port}"
         data = _load()
-        data[key] = {
+        account_info = {
             "password":   password,
             "username":   username,
             "provider":   "Mailpit",
@@ -304,6 +328,15 @@ class SMTPManager:
             "verified":   True,
             "imap_ok":    False,
         }
+
+        if chat_id is not None:
+            chat_id_str = str(chat_id)
+            if chat_id_str not in data or not isinstance(data[chat_id_str], dict):
+                data[chat_id_str] = {}
+            data[chat_id_str][key] = account_info
+        else:
+            data[key] = account_info
+
         _save(data)
 
         return {
@@ -318,23 +351,45 @@ class SMTPManager:
             "note":      f"Mailpit di {host}:{port}",
         }
 
-    def remove_account(self, email: str) -> dict:
+    def remove_account(self, email: str, chat_id: int = None) -> dict:
         email = email.strip().lower()
         data  = _load()
-        if email not in data:
-            return {"success": False, "error": f"Akun `{email}` tidak ditemukan."}
-        del data[email]
+
+        if chat_id is not None:
+            chat_id_str = str(chat_id)
+            user_data = data.get(chat_id_str, {})
+            if email not in user_data:
+                return {"success": False, "error": f"Akun `{email}` tidak ditemukan."}
+            del user_data[email]
+            data[chat_id_str] = user_data
+        else:
+            if email not in data:
+                return {"success": False, "error": f"Akun `{email}` tidak ditemukan."}
+            del data[email]
+
         _save(data)
         return {"success": True, "email": email}
 
-    def get_account(self, email: str) -> dict | None:
+    def get_account(self, email: str, chat_id: int = None) -> dict | None:
         data = _load()
-        acc  = data.get(email.strip().lower())
-        if acc:
-            acc["email"] = email
-        return acc
+        email_key = email.strip().lower()
 
-    def add_auto_generated(self, gen_result: dict) -> dict:
+        if chat_id is not None:
+            chat_id_str = str(chat_id)
+            user_data = data.get(chat_id_str, {})
+            acc = user_data.get(email_key)
+            if not acc:
+                # Fallback to top-level if not found in user-scoped
+                acc = data.get(email_key)
+        else:
+            acc = data.get(email_key)
+
+        if acc and isinstance(acc, dict):
+            acc["email"] = email
+            return acc
+        return None
+
+    def add_auto_generated(self, gen_result: dict, chat_id: int = None) -> dict:
         """
         Simpan akun SMTP hasil auto-generate (dari smtp_auto_generator).
         Tidak perlu verifikasi ulang — credentials sudah valid dari provider.
@@ -347,7 +402,7 @@ class SMTPManager:
             return {"success": False, "error": "Key/username tidak ada di hasil generate."}
 
         data = _load()
-        data[key] = {
+        account_info = {
             "password":  gen_result.get("password", ""),
             "username":  gen_result.get("username", key),
             "provider":  gen_result.get("provider", "Auto"),
@@ -360,6 +415,15 @@ class SMTPManager:
             "auto_gen":  True,
             "note":      gen_result.get("note", ""),
         }
+
+        if chat_id is not None:
+            chat_id_str = str(chat_id)
+            if chat_id_str not in data or not isinstance(data[chat_id_str], dict):
+                data[chat_id_str] = {}
+            data[chat_id_str][key] = account_info
+        else:
+            data[key] = account_info
+
         _save(data)
 
         return {
@@ -374,5 +438,8 @@ class SMTPManager:
             "note":      gen_result.get("note", ""),
         }
 
-    def count(self) -> int:
-        return len(_load())
+    def count(self, chat_id: int = None) -> int:
+        data = _load()
+        if chat_id is not None:
+            return len(data.get(str(chat_id), {}))
+        return len(data)

@@ -76,11 +76,21 @@ def pick_random(numbers: list[str], count: int = 3) -> list[str]:
 # WhatsApp registration checker
 # ─────────────────────────────────────────────────────────────────────────────
 
-def is_checker_connected() -> bool:
-    return bool(WA_CHECKER_URL)
+def is_checker_connected(chat_id: int = None) -> bool:
+    if not WA_CHECKER_URL:
+        return False
+    if chat_id is None:
+        return True
+    try:
+        r = requests.get(f"{WA_CHECKER_URL}/status", params={"chat_id": chat_id}, timeout=5)
+        if r.status_code == 200:
+            return r.json().get("registered", False)
+    except Exception:
+        pass
+    return False
 
 
-def check_wa_registered(phone: str) -> bool | None:
+def check_wa_registered(phone: str, chat_id: int = None) -> bool | None:
     """
     Cek apakah nomor terdaftar di WhatsApp.
     Return:
@@ -92,9 +102,13 @@ def check_wa_registered(phone: str) -> bool | None:
         return None
 
     try:
+        params = {"phone": phone}
+        if chat_id is not None:
+            params["chat_id"] = chat_id
+
         r = requests.get(
             f"{WA_CHECKER_URL}/check",
-            params={"phone": phone},
+            params=params,
             timeout=TIMEOUT,
         )
         if r.status_code == 200:
@@ -121,14 +135,14 @@ def check_wa_registered(phone: str) -> bool | None:
         return None
 
 
-def check_numbers(phones: list[str]) -> list[dict]:
+def check_numbers(phones: list[str], chat_id: int = None) -> list[dict]:
     """
     Cek daftar nomor, return list of:
       {"phone": "+628...", "registered": True/False/None}
     """
     results = []
     for phone in phones:
-        registered = check_wa_registered(phone)
+        registered = check_wa_registered(phone, chat_id)
         results.append({"phone": phone, "registered": registered})
     return results
 
