@@ -522,7 +522,7 @@
     "phone": "+2290192908268",
     "smtp_email": "azascloud@gmail.com",
     "sent_at": 1785775908.29313,
-    "notified": false,
+    "notified": true,
     "check_count": 1,
     "user_info": "@Azascrack"
   }
