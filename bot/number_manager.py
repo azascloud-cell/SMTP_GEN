@@ -261,3 +261,47 @@ def format_gacha_method(phone: str) -> str:
         f"5️⃣ *Bahasa:* Atur bahasa aplikasi (WhatsApp) dan device ke *{lang}*.\n"
         f"6️⃣ *VPhoneGaga Note:* Jika menggunakan VPhoneGaga, disarankan gunakan **one-click ganti device** tiap kali mau gacha kode negara baru. Jangan mencampur device jika gacha sebelumnya gagal (misal Region [+{code}] gagal, ganti negara lain tapi belum ganti device dan setting metode sebelumnya)."
     )
+
+
+def get_recommended_banding_language(phone: str) -> str:
+    """
+    Rekomendasikan 1 bahasa terbaik berdasarkan region kode negara.
+    - +228/+225/+221/+33 disarankan FR
+    - +966/+971/+20/+249 disarankan AR
+    - +7 disarankan RU
+    - +62 disarankan ID
+    - sisanya EN
+    """
+    info = get_country_info(phone)
+    code = info["code"]
+    if code in ("228", "225", "221", "33"):
+        return "🇫🇷 Prancis (Français)"
+    if code in ("966", "971", "20", "249"):
+        return "🇸🇦 Arab (العربية)"
+    if code == "7":
+        return "🇷🇺 Rusia (Русский)"
+    if code == "62":
+        return "🇮🇩 Indonesia (ID)"
+    return "🇬🇧 Inggris (English)"
+
+
+def format_banding_templates(phone: str) -> str:
+    lang_rec = get_recommended_banding_language(phone)
+    return (
+        f"📩 *TEMPLATE TEXT BANDING (UNBAN REQUEST)*\n"
+        f"💡 *Bahasa Disarankan untuk Region Ini:* {lang_rec}\n\n"
+        f"Silakan pilih dan salin teks banding di bawah ini sesuai kebutuhan:\n\n"
+        f"1️⃣ 🇮🇩 *Bahasa Indonesia:*\n"
+        f"`Halo Tim Dukungan WhatsApp, Nomor saya ({phone}) terblokir secara tidak sengaja. Saya selalu mematuhi Ketentuan Layanan WhatsApp dan tidak pernah mengirim spam. Nomor ini sangat penting untuk komunikasi harian saya. Mohon peninjauan ulang dan aktifkan kembali akun saya. Terima kasih.`\n\n"
+        f"2️⃣ 🇬🇧 *Bahasa Inggris (English):*\n"
+        f"`Hello WhatsApp Support Team, My phone number ({phone}) was banned by mistake. I strictly follow WhatsApp Terms of Service and have not sent any spam or violation content. This is my primary number for daily communication. Please review and unban my account. Thank you.`\n\n"
+        f"3️⃣ 🇸🇦 *Bahasa Arab (العربية):*\n"
+        f"`مرحبًا فريق دعم WhatsApp، تم حظر رقم هاتفي ({phone}) عن طريق الخطأ. أنا ألتزم تمامًا بشروط خدمة WhatsApp ولم أقم بإرسال أي رسائل مزعجة. هذا الرقم ضروري جدًا لتواصلي اليومي. يرجى إعادة النظر وإلغاء حظر حسابي. شكرًا لكم.`\n\n"
+        f"4️⃣ 🇷🇺 *Bahasa Rusia (Русский):*\n"
+        f"`Здравствуйте, служба поддержки WhatsApp! Мой номер телефона ({phone}) был заблокирован по ошибке. Я строго соблюдаю Условия использования WhatsApp и не рассылал спам. Этот номер жизненно важен для моего ежедневного общения. Пожалуйста, проверьте и разблокируйте мой аккаунт. Спасибо.`\n\n"
+        f"5️⃣ 🇫🇷 *Bahasa Prancis (Français):*\n"
+        f"`Bonjour l'équipe Support WhatsApp, Mon numéro de téléphone ({phone}) a été bloqué par erreur. Je respecte strictement les Conditions d'utilisation de WhatsApp et n'ai envoyé aucun spam. Ce numéro est essentiel pour ma communication quotidienne. Merci de bien vouloir vérifier et débloquer mon compte. Cordialement.`\n\n"
+        f"📌 *CATATAN PENTING BANDING:*\n"
+        f"• Pastikan ubah Bahasa Device & WhatsApp di VPhoneGaga/HP sesuai bahasa template yang dipilih sebelum klik tombol Banding / Minta Peninjauan.\n"
+        f"• Jika banding via In-App ditolak, kirimkan teks di atas ke email: `support@support.whatsapp.com` dengan subjek: `[Unban Request] My phone number {phone}`."
+    )
