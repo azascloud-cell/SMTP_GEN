@@ -64,6 +64,15 @@ REPO       = os.environ.get("GITHUB_REPOSITORY", "SMTP_GEN")
 generator = SMTPGenerator()
 manager   = SMTPManager()
 
+BANDING_TEMPLATES_RAW = {
+    "id": "Halo Tim Dukungan WhatsApp, Nomor saya ({phone}) terblokir secara tidak sengaja. Saya selalu mematuhi Ketentuan Layanan WhatsApp dan tidak pernah mengirim spam. Nomor ini sangat penting untuk komunikasi harian saya. Mohon peninjauan ulang dan aktifkan kembali akun saya. Terima kasih.",
+    "en": "Hello WhatsApp Support Team, My phone number ({phone}) was banned by mistake. I strictly follow WhatsApp Terms of Service and have not sent any spam or violation content. This is my primary number for daily communication. Please review and unban my account. Thank you.",
+    "ar": "مرحبًا فريق دعم WhatsApp، تم حظر رقم هاتفي ({phone}) عن طريق الخطأ. أنا ألتزم تمامًا بشروط خدمة WhatsApp ولم أقم بإرسال أي رسائل مزعجة. هذا الرقم ضروري جدًا لتواصلي اليومي. يرجى إعادة النظر وإلغاء حظر حسابي. شكرًا لكم.",
+    "ru": "Здравствуйте, служба поддержки WhatsApp! Мой номер телефона ({phone}) был заблокирован по ошибке. Я строго соблюдаю Условия использования WhatsApp и не рассылал спам. Этот номер жизненно важен для моего ежедневного общения. Пожалуйста, проверьте и разблокируйте мой аккаунт. Спасибо.",
+    "fr": "Bonjour l'équipe Support WhatsApp, Mon numéro de téléphone ({phone}) a été bloqué par erreur. Je respecte strictement les Conditions d'utilisation de WhatsApp et n'ai envoyé aucun spam. Ce numéro est essentiel pour ma communication quotidienne. Merci de bien vouloir vérifier et débloquer mon compte. Cordialement."
+}
+
+
 # ── Simpan daftar nomor per user sementara (in-memory) ───────────────────────
 # { chat_id: ["+628...", ...] }
 _user_numbers: dict[int, list[str]] = {}
@@ -1313,6 +1322,56 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("fix_num_"):
         phone = data[len("fix_num_"):]
 
+        accounts = manager.list_accounts(chat_id)
+        verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
+        if not verified:
+            await query.edit_message_text(
+                "❌ *Tidak ada akun SMTP yang aktif!*\n\n"
+                "Tambah dulu dengan:\n"
+                "`/addsmtp email@gmail.com|app_password`\n\n"
+                "⚠️ Catatan: Akun SMTP otomatis (seperti Mail.tm) tidak bisa dipakai kirim email banding.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+            )
+            return
+
+        from bot.number_manager import get_recommended_banding_language
+        rec_lang = get_recommended_banding_language(phone)
+
+        btn_id = "🇮🇩 Indonesia" + (" 🌟" if "Indonesia" in rec_lang else "")
+        btn_en = "🇬🇧 Inggris" + (" 🌟" if "Inggris" in rec_lang else "")
+        btn_ar = "🇸🇦 Arab" + (" 🌟" if "Arab" in rec_lang else "")
+        btn_ru = "🇷🇺 Rusia" + (" 🌟" if "Rusia" in rec_lang else "")
+        btn_fr = "🇫🇷 Prancis" + (" 🌟" if "Prancis" in rec_lang else "")
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(btn_id, callback_data=f"send_fix_id_{phone}")],
+            [InlineKeyboardButton(btn_en, callback_data=f"send_fix_en_{phone}")],
+            [InlineKeyboardButton(btn_ar, callback_data=f"send_fix_ar_{phone}")],
+            [InlineKeyboardButton(btn_ru, callback_data=f"send_fix_ru_{phone}")],
+            [InlineKeyboardButton(btn_fr, callback_data=f"send_fix_fr_{phone}")],
+            [InlineKeyboardButton("🔙 Kembali ke Detail", callback_data=f"copy_num_{phone}")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+        ])
+
+        await query.edit_message_text(
+            f"🌐 *PILIH BAHASA TEMPLATE BANDING*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor: `{phone}`\n"
+            f"💡 *Rekomendasi:* `{rec_lang}`\n\n"
+            f"Silakan pilih bahasa yang ingin Anda gunakan untuk mengirim email banding. "
+            f"Setiap pilihan akan secara otomatis memformat teks banding sesuai bahasa tersebut.",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+
+    elif data.startswith("send_fix_"):
+        parts = data[len("send_fix_"):].split("_", 1)
+        if len(parts) == 2:
+            lang_code, phone = parts
+        else:
+            lang_code, phone = "en", data[len("send_fix_"):]
+
         global _last_smtp_index
         accounts = manager.list_accounts(chat_id)
         verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
@@ -1336,17 +1395,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Gagal ambil data akun SMTP.", parse_mode="Markdown")
             return
 
+        lang_name_map = {
+            "id": "Indonesia 🇮🇩",
+            "en": "Inggris 🇬🇧",
+            "ar": "Arab 🇸🇦",
+            "ru": "Rusia 🇷🇺",
+            "fr": "Prancis 🇫🇷"
+        }
+        chosen_lang_name = lang_name_map.get(lang_code, "Inggris 🇬🇧")
+
         await query.edit_message_text(
             f"📤 *Mengirim email banding...*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📱 Nomor: `{phone}`\n"
+            f"🌐 Bahasa: `{chosen_lang_name}`\n"
             f"📧 SMTP: `{smtp_email}`\n"
             f"Target: `support@support.whatsapp.com`",
             parse_mode="Markdown"
         )
 
+        raw_tpl = BANDING_TEMPLATES_RAW.get(lang_code, BANDING_TEMPLATES_RAW["en"])
+        custom_body = raw_tpl.format(phone=phone)
+        custom_subject = f"[Unban Request] My phone number {phone}"
+
         sent_at = time.time()
-        result  = await asyncio.to_thread(send_appeal_email, smtp_full, phone)
+        result  = await asyncio.to_thread(send_appeal_email, smtp_full, phone, custom_subject, custom_body)
 
         if not result["success"]:
             await query.edit_message_text(
@@ -1364,11 +1437,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_info = f"@{user.username}" if user and user.username else (f"{user.first_name}" if user else "User")
         add_pending(chat_id, phone, smtp_email, sent_at, user_info)
 
+        # Construct success message showing alias and sending count if available
+        alias_used = result.get("alias", smtp_email)
+        alias_count = result.get("count", 0)
+
+        alias_info = ""
+        if alias_count > 0:
+            alias_info = f"👤 Alias: `{alias_used}` *(Pengiriman ke-{alias_count} hari ini)*\n"
+
         await query.edit_message_text(
             f"📬 *EMAIL BANDING TERKIRIM!*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📱 Nomor : `{phone}`\n"
             f"📧 SMTP  : `{smtp_email}`\n"
+            f"{alias_info}"
+            f"🌐 Bahasa: `{chosen_lang_name}`\n"
             f"✅ Status : Banding berhasil terkirim!\n\n"
             f"🤖 *INFO*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -1382,12 +1465,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Post to Testimonial Channel
+        alias_testi_line = f"👤 *Alias:* `{alias_used}` *(Ke-{alias_count} hari ini)*\n" if alias_count > 0 else ""
         testi_msg = (
             f"🚀 *NOTIF BANDING TERKIRIM* 🚀\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📱 *Nomor:* `{phone}`\n"
             f"👤 *User:* {user_info}\n"
             f"📧 *SMTP:* `{smtp_email}`\n"
+            f"{alias_testi_line}"
+            f"🌐 *Bahasa:* `{chosen_lang_name}`\n"
             f"✅ *Status:* Email banding sukses dikirim ke WhatsApp Support!\n"
             f"━━━━━━━━━━━━━━━━━━━━"
         )

@@ -1,5 +1,7 @@
 from bot.number_files import detect_region, _sanitize
 from bot.number_manager import parse_numbers_from_text, pick_random, get_country_info
+import bot.whatsapp_fix
+from pathlib import Path
 
 def test_detect_region():
     assert detect_region("list_indonesia.txt") == "🇮🇩 Indonesia"
@@ -41,3 +43,36 @@ def test_format_banding_templates():
     assert "TEMPLATE TEXT BANDING" in templates
     assert "🇫🇷 Prancis (Français)" in templates
     assert "+22899999999" in templates
+
+def test_get_gmail_alias_and_increment(tmp_path):
+    # Mock DAILY_USAGE_FILE to a temp directory
+    temp_file = tmp_path / "test_smtp_daily_usage.json"
+    original_file = bot.whatsapp_fix.DAILY_USAGE_FILE
+    bot.whatsapp_fix.DAILY_USAGE_FILE = temp_file
+
+    try:
+        from bot.whatsapp_fix import get_gmail_alias_and_increment
+
+        # Test non-gmail email
+        alias, count = get_gmail_alias_and_increment("test@yahoo.com")
+        assert alias == "test@yahoo.com"
+        assert count == 0
+
+        # Test gmail email - First send
+        alias1, count1 = get_gmail_alias_and_increment("my.user@gmail.com")
+        assert alias1 == "my.user+1@gmail.com"
+        assert count1 == 1
+
+        # Test gmail email - Second send
+        alias2, count2 = get_gmail_alias_and_increment("my.user@gmail.com")
+        assert alias2 == "my.user+2@gmail.com"
+        assert count2 == 2
+
+        # Test email with existing plus sign
+        alias3, count3 = get_gmail_alias_and_increment("my.user+existing@gmail.com")
+        assert alias3 == "my.user+3@gmail.com"
+        assert count3 == 3
+
+    finally:
+        # Restore the original DAILY_USAGE_FILE
+        bot.whatsapp_fix.DAILY_USAGE_FILE = original_file
