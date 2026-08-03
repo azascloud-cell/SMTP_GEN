@@ -444,5 +444,14 @@
     "notified": true,
     "check_count": 1,
     "user_info": "@Azascrack"
+  },
+  "6874843931_+249118361445_1785757446": {
+    "chat_id": 6874843931,
+    "phone": "+249118361445",
+    "smtp_email": "azascloud@gmail.com",
+    "sent_at": 1785757446.42715,
+    "notified": false,
+    "check_count": 0,
+    "user_info": "@Azascrack"
   }
 }
