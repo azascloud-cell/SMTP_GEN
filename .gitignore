@@ -32,5 +32,9 @@ venv/
 env/
 .venv/
 
+# Node.js
+node_modules/
+package-lock.json
+
 # WhatsApp session data (always keep secure, only check-in the encrypted .enc file)
 data/baileys_auth/

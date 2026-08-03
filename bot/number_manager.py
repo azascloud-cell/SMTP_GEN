@@ -153,18 +153,18 @@ def check_numbers(phones: list[str], chat_id: int = None) -> list[dict]:
 
 def status_emoji(registered: bool | None) -> str:
     if registered is True:
-        return "🔴"   # Terdaftar WA
+        return "🔴"   # Terdaftar (Linked)
     if registered is False:
-        return "🟢"   # Fresh / belum terdaftar
-    return "⚪"       # Tidak diketahui
+        return "🟢"   # Fresh
+    return "⚪"       # Terdaftar (Unlinked)
 
 
 def status_label(registered: bool | None) -> str:
     if registered is True:
-        return "Terdaftar WA"
+        return "Terdaftar (Linked)"
     if registered is False:
-        return "Fresh ✓"
-    return "?"
+        return "Fresh"
+    return "Terdaftar (Unlinked)"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

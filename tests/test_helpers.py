@@ -76,3 +76,14 @@ def test_get_gmail_alias_and_increment(tmp_path):
     finally:
         # Restore the original DAILY_USAGE_FILE
         bot.whatsapp_fix.DAILY_USAGE_FILE = original_file
+
+
+def test_status_emoji_and_label():
+    from bot.number_manager import status_emoji, status_label
+    assert status_emoji(True) == "🔴"
+    assert status_emoji(False) == "🟢"
+    assert status_emoji(None) == "⚪"
+
+    assert status_label(True) == "Terdaftar (Linked)"
+    assert status_label(False) == "Fresh"
+    assert status_label(None) == "Terdaftar (Unlinked)"
