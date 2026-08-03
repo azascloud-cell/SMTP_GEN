@@ -15,6 +15,7 @@ from number_files import delete_file, detect_region, list_files, load_file, save
 from number_manager import (
     WA_CHECKER_URL,
     check_numbers,
+    format_banding_templates,
     format_gacha_method,
     get_country_info,
     is_checker_connected,
@@ -22,7 +23,6 @@ from number_manager import (
     pick_random,
     status_emoji,
     status_label,
-    format_banding_templates,
 )
 from smtp_auto_generator import (
     MAILERSEND_API_KEY,
@@ -1302,6 +1302,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         method_text = format_gacha_method(phone)
 
+        from number_manager import get_masked_and_prefix
+        masked_num, prefix_val = get_masked_and_prefix(phone)
+
         # We will keep the detail message clear and elegant
         detail_msg = (
             f"📱 *Detail Nomor & Status WA*\n"
@@ -1312,6 +1315,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏰ *Timezone:* {c_info['timezone']}\n"
             f"🗣️ *Bahasa Device/WA:* {c_info['lang']}\n"
             f"🌐 *Saran Server VPN:* {c_info['vpn']}\n"
+            f"🔍 *Info Traffic:* `{masked_num}` (😬 Prefix: `{prefix_val}`)\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{method_text}\n\n"
             f"{format_banding_templates(phone)}"
