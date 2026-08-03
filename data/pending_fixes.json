@@ -399,5 +399,14 @@
     "notified": false,
     "check_count": 1,
     "user_info": "@Azascrack"
+  },
+  "6874843931_+380971993123_1785738747": {
+    "chat_id": 6874843931,
+    "phone": "+380971993123",
+    "smtp_email": "mahirujawa@gmail.com",
+    "sent_at": 1785738747.6500638,
+    "notified": false,
+    "check_count": 0,
+    "user_info": "@Azascrack"
   }
 }
