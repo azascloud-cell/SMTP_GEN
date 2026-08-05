@@ -94,3 +94,24 @@ def test_get_masked_and_prefix():
     masked, prefix = get_masked_and_prefix("+22879017409")
     assert masked == "228***7409"
     assert prefix == "228790"
+
+
+def test_search_by_prefix_empty():
+    from bot.number_manager import search_by_prefix
+    # Should return empty list if prefix is empty or chat_id has no files
+    assert search_by_prefix("", 99999) == []
+    assert search_by_prefix("628", 99999) == []
+
+
+def test_ivasms_extract_otp():
+    from bot.ivasms import extract_otp
+    assert extract_otp("Kode verifikasi Anda adalah: 123456.") == "123456"
+    assert extract_otp("Your OTP is: 987-654. Do not share.") == "987654"
+    assert extract_otp("No code here") == "N/A"
+
+
+def test_ivasms_detect_service():
+    from bot.ivasms import detect_service
+    assert detect_service("Your WhatsApp code is 123456") == "WhatsApp"
+    assert detect_service("Telegram verification code: 98765") == "Telegram"
+    assert detect_service("Some random code for unspecified service 123") == "SMS OTP"
