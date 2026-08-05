@@ -305,3 +305,23 @@ def format_banding_templates(phone: str) -> str:
         f"• Pastikan ubah Bahasa Device & WhatsApp di VPhoneGaga/HP sesuai bahasa template yang dipilih sebelum klik tombol Banding / Minta Peninjauan.\n"
         f"• Jika banding via In-App ditolak, kirimkan teks di atas ke email: `support@support.whatsapp.com` dengan subjek: `[Unban Request] My phone number {phone}`."
     )
+
+
+def get_masked_and_prefix(phone: str) -> tuple[str, str]:
+    """
+    Ekstrak prefix dan masked number dari nomor telepon.
+    Contoh: +22879017409 -> ("228***7409", "228790")
+    """
+    # Ambil digit saja
+    digits = re.sub(r"[^\d]", "", phone)
+
+    # Prefix: 6 digit pertama (atau sepanjang digit yang ada jika kurang dari 6)
+    prefix = digits[:6]
+
+    # Masked: 3 digit pertama + *** + 4 digit terakhir
+    if len(digits) >= 7:
+        masked = digits[:3] + "***" + digits[-4:]
+    else:
+        masked = digits
+
+    return masked, prefix

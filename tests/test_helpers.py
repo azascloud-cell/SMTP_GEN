@@ -87,3 +87,10 @@ def test_status_emoji_and_label():
     assert status_label(True) == "Terdaftar (Linked)"
     assert status_label(False) == "Fresh"
     assert status_label(None) == "Terdaftar (Unlinked)"
+
+
+def test_get_masked_and_prefix():
+    from bot.number_manager import get_masked_and_prefix
+    masked, prefix = get_masked_and_prefix("+22879017409")
+    assert masked == "228***7409"
+    assert prefix == "228790"
