@@ -4,6 +4,7 @@ Semua data (combos, user assignments, logs, credentials) disimpan di data/ivasms
 dan disinkronkan ke GitHub secara otomatis menggunakan pattern storage.py.
 """
 
+import base64
 import json
 import logging
 import os
@@ -40,75 +41,6 @@ _session = requests.Session()
 _is_logged_in = False
 _csrf_token = None
 _cookies = None
-
-def update_cookies(cookie_str: str) -> dict:
-    """Mengupdate dan menyimpan cookies dari user input (string raw atau JSON)."""
-    global _session, _cookies, _is_logged_in
-    cookies = {}
-    try:
-        # Coba parse sebagai JSON (misalnya export dari chrome extension)
-        data = json.loads(cookie_str)
-        if isinstance(data, dict):
-            cookies = data
-        elif isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and "name" in item and "value" in item:
-                    cookies[item["name"]] = item["value"]
-    except Exception:
-        # Parse standard Cookie header format
-        for item in cookie_str.split(";"):
-            item = item.strip()
-            if "=" in item:
-                k, v = item.split("=", 1)
-                cookies[k.strip()] = v.strip()
-
-    if cookies:
-        _session.cookies.clear()
-        for k, v in cookies.items():
-            _session.cookies.set(k, v)
-        data = load_ivasms_data()
-        data["cookies"] = cookies
-        save_ivasms_data(data)
-        _cookies = cookies
-        _is_logged_in = False  # Reset login state to force re-verification
-    return cookies
-
-def check_ivasms_connection() -> tuple[bool, str]:
-    """Mengecek apakah status koneksi aktif menggunakan cookie yang tersimpan."""
-    global _session, _is_logged_in, _csrf_token, _cookies
-    creds = get_credentials()
-    base_url = creds.get("base_url")
-    if not base_url:
-        return False, "Base URL iVasms belum diset."
-
-    data = load_ivasms_data()
-    stored_cookies = data.get("cookies")
-    if stored_cookies:
-        _session.cookies.clear()
-        for k, v in stored_cookies.items():
-            _session.cookies.set(k, v)
-        _cookies = stored_cookies
-
-    test_url = f"{base_url.rstrip('/')}/portal/sms/received"
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        resp = _session.get(test_url, headers=headers, timeout=15, allow_redirects=True)
-        if resp.status_code == 200 and "login" not in resp.url.lower() and "sign in" not in resp.text.lower():
-            soup = BeautifulSoup(resp.text, "html.parser")
-            csrf_meta = soup.find("meta", {"name": "csrf-token"})
-            if csrf_meta:
-                _csrf_token = csrf_meta.get("content")
-            _is_logged_in = True
-            return True, "Koneksi sukses! Terhubung via Cookie. ✅"
-        else:
-            # Jika cookie gagal, coba login otomatis dengan email/password
-            if login_to_ivasms():
-                return True, "Koneksi sukses! Login via Email & Password berhasil. ✅"
-            return False, "Koneksi gagal. Cookie/Kredensial tidak valid."
-    except Exception as e:
-        return False, f"Koneksi gagal: {e}"
 
 def load_ivasms_data() -> dict:
     """Load data iVasms dari persistent storage."""
@@ -207,11 +139,6 @@ def login_to_ivasms() -> bool:
 
             _is_logged_in = True
             _cookies = _session.cookies.get_dict()
-
-            # Simpan cookie ke persistent storage
-            data = load_ivasms_data()
-            data["cookies"] = _cookies
-            save_ivasms_data(data)
             return True
         else:
             logger.warning("Gagal login ke iVasms: Email/password salah atau diblokir.")
@@ -228,8 +155,7 @@ def fetch_ivasms_messages() -> list[dict]:
     global _is_logged_in, _csrf_token, _session
 
     if not _is_logged_in:
-        connected, _ = check_ivasms_connection()
-        if not connected:
+        if not login_to_ivasms():
             return []
 
     creds = get_credentials()
