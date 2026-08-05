@@ -1,10 +1,12 @@
 import asyncio
+import io
 import logging
 import os
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+import openpyxl
 
 from github_updater import (
     check_for_update,
@@ -24,6 +26,8 @@ from number_manager import (
     status_emoji,
     status_label,
     search_by_prefix,
+    _normalize,
+    check_wa_registered,
 )
 from smtp_auto_generator import (
     MAILERSEND_API_KEY,
@@ -58,7 +62,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BOT_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
+BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 RUN_ID     = os.environ.get("GITHUB_RUN_ID", "local")
 REPO       = os.environ.get("GITHUB_REPOSITORY", "SMTP_GEN")
@@ -715,6 +719,45 @@ async def cmd_setivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+    if not is_admin:
+        await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
+        return
+
+    cookie_data = " ".join(context.args).strip() if context.args else ""
+    if not cookie_data:
+        await update.message.reply_text(
+            "🔑 *Set Cookie Session iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/setcookie <cookie_string_atau_json>`\n\n"
+            "Contoh raw cookie:\n"
+            "`/setcookie XSRF-TOKEN=...; ivasms_session=...`\n\n"
+            "Contoh JSON cookie (dari chrome extension):\n"
+            "`/setcookie [{\"name\": \"ivasms_session\", \"value\": \"...\"}]`",
+            parse_mode="Markdown"
+        )
+        return
+
+    from ivasms import update_cookies, check_ivasms_connection
+    await asyncio.to_thread(update_cookies, cookie_data)
+
+    msg = await update.message.reply_text("⏳ Memverifikasi cookie session ke iVasms...")
+    ok, status_msg = await asyncio.to_thread(check_ivasms_connection)
+
+    await msg.edit_text(
+        f"🔑 *Set Cookie Session*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💾 Cookie berhasil disimpan!\n"
+        f"🔌 Hasil Test Koneksi: *{status_msg}*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔐 Admin Panel", callback_data="ivasms_admin")
+        ]])
+    )
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❓ *Panduan Bot*\n"
@@ -743,35 +786,207 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Number Management Document Handler ────────────────────────────────────────
+async def process_excel_file_bytes(file_content: bytes, chat_id: int) -> tuple[bytes, list[str]]:
+    # Load workbook from memory bytes
+    in_fp = io.BytesIO(file_content)
+    wb = openpyxl.load_workbook(in_fp)
+    ws = wb.active
+
+    # Try to find header row and column indexes
+    header_row_idx = None
+    number_col_idx = None
+    range_col_idx = None
+
+    # Scan first 15 rows for headers
+    for r in range(1, 15):
+        row_vals = [str(ws.cell(row=r, column=c).value).strip().lower() if ws.cell(row=r, column=c).value else "" for c in range(1, 15)]
+        if "number" in row_vals:
+            number_col_idx = row_vals.index("number") + 1
+            header_row_idx = r
+            if "range" in row_vals:
+                range_col_idx = row_vals.index("range") + 1
+            elif "provider" in row_vals:
+                range_col_idx = row_vals.index("provider") + 1
+            elif "carrier" in row_vals:
+                range_col_idx = row_vals.index("carrier") + 1
+            break
+
+    # Default fallback if header not found
+    if not number_col_idx:
+        # Search for first numeric cell that looks like a phone number
+        for r in range(1, min(ws.max_row + 1, 20)):
+            for c in range(1, min(ws.max_column + 1, 10)):
+                cell_val = str(ws.cell(row=r, column=c).value or "").strip()
+                if cell_val.isdigit() and len(cell_val) >= 8:
+                    number_col_idx = c
+                    if c > 1:
+                        range_col_idx = c - 1
+                    break
+            if number_col_idx:
+                break
+
+    # Ultimate fallback
+    if not number_col_idx:
+        number_col_idx = 2
+        range_col_idx = 1
+        header_row_idx = 3
+
+    start_row = header_row_idx + 1 if header_row_idx else 1
+
+    # Create new clean workbook
+    out_wb = openpyxl.Workbook()
+    out_ws = out_wb.active
+    out_ws.title = "Cleaned Numbers"
+
+    # Set headers
+    out_ws.cell(row=1, column=1, value="Flag")
+    out_ws.cell(row=1, column=2, value="Number")
+    out_ws.cell(row=1, column=3, value="Provider")
+    out_ws.cell(row=1, column=4, value="Status")
+
+    # Bold the headers
+    from openpyxl.styles import Font
+    bold_font = Font(bold=True)
+    for c in range(1, 5):
+        out_ws.cell(row=1, column=c).font = bold_font
+
+    for col_letter, width in [("A", 10), ("B", 22), ("C", 25), ("D", 25)]:
+        out_ws.column_dimensions[col_letter].width = width
+
+    out_row_idx = 2
+    cleaned_numbers = []
+
+    rows_to_process = []
+    for r in range(start_row, ws.max_row + 1):
+        num_val = ws.cell(row=r, column=number_col_idx).value
+        range_val = ws.cell(row=r, column=range_col_idx).value if range_col_idx else ""
+        if num_val is not None and str(num_val).strip() != "":
+            rows_to_process.append((num_val, range_val))
+
+    # Limit real-time WA checking to prevent long timeouts
+    check_status = len(rows_to_process) <= 150
+
+    for num_val, range_val in rows_to_process:
+        num_str = str(num_val).strip()
+        if "." in num_str:
+            num_str = num_str.split(".")[0]
+
+        normalized_num = _normalize(num_str)
+        if not normalized_num:
+            if num_str.isdigit():
+                normalized_num = "+" + num_str
+            else:
+                continue
+
+        # Intelligently convert local Indonesian "+08..." to standard "+628..."
+        if normalized_num.startswith("+08"):
+            normalized_num = "+628" + normalized_num[3:]
+
+        cleaned_numbers.append(normalized_num)
+
+        # Get country details for the flag
+        c_info = get_country_info(normalized_num)
+        flag = c_info.get("flag", "🌍")
+        country_name = c_info.get("name", "Unknown")
+
+        # Determine range/provider string
+        range_str = str(range_val).strip() if range_val else country_name
+
+        # Check WhatsApp status
+        status_str = "Terdaftar (Unlinked)"
+        if check_status:
+            reg = await asyncio.to_thread(check_wa_registered, normalized_num, chat_id)
+            status_str = status_label(reg)
+
+        out_ws.cell(row=out_row_idx, column=1, value=flag)
+        out_ws.cell(row=out_row_idx, column=2, value=normalized_num)
+        out_ws.cell(row=out_row_idx, column=3, value=range_str)
+        out_ws.cell(row=out_row_idx, column=4, value=status_str)
+
+        out_row_idx += 1
+
+    out_fp = io.BytesIO()
+    out_wb.save(out_fp)
+    return out_fp.getvalue(), cleaned_numbers
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tangani upload file .txt untuk cek nomor WA."""
+    """Tangani upload file .txt atau .xlsx untuk cek nomor WA."""
     doc = update.message.document
     if not doc:
         return
 
-    # Hanya proses file .txt
     fname = doc.file_name or ""
-    if not fname.lower().endswith(".txt"):
+    is_xlsx = fname.lower().endswith(".xlsx")
+    is_txt = fname.lower().endswith(".txt")
+
+    if not is_xlsx and not is_txt:
         await update.message.reply_text(
-            "⚠️ Hanya file *.txt* yang didukung untuk cek nomor.\n"
-            "Format: satu nomor per baris.",
+            "⚠️ Hanya file *.txt* atau *.xlsx* yang didukung untuk cek nomor.",
             parse_mode="Markdown",
         )
         return
 
+    chat_id = update.effective_chat.id
+    safe_fname = fname.replace("_", "\\_").replace("*", "\\*")
     msg = await update.message.reply_text(
-        f"📄 Memproses *{fname}*...",
+        f"📄 Memproses *{safe_fname}*...",
         parse_mode="Markdown",
     )
 
     try:
         tg_file  = await doc.get_file()
         content  = await tg_file.download_as_bytearray()
-        text     = content.decode("utf-8", errors="replace")
     except Exception as e:  # noqa: BLE001
         await msg.edit_text(f"❌ Gagal baca file: {e}")
         return
 
+    if is_xlsx:
+        try:
+            # Process Excel using helper
+            excel_bytes, numbers = await process_excel_file_bytes(content, chat_id)
+            if not numbers:
+                await msg.edit_text("❌ Gagal mengekstrak nomor dari Excel. Pastikan terdapat kolom 'Number'.")
+                return
+
+            _user_numbers[chat_id] = numbers
+
+            # Simpan file Excel cleaned kembali ke user
+            out_fname = "cleaned_" + fname
+            clean_fp = io.BytesIO(excel_bytes)
+            clean_fp.name = out_fname
+
+            # Send cleaned Excel file
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=clean_fp,
+                filename=out_fname,
+                caption=(
+                    f"✅ *File berhasil dirapikan!*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 Total: `{len(numbers)}` nomor\n"
+                    f"✨ Format baru disesuaikan, ditambahkan flag icon negara dan status real-time."
+                ),
+                parse_mode="Markdown"
+            )
+
+            # Simpan versi text ke storage agar bisa dipakai untuk cek acak / gacha
+            txt_content = "\n".join(numbers)
+            sanitized_fname = re.sub(r"[^\w\-.]", "_", fname.replace(".xlsx", ".txt"))
+            sanitized_fname = sanitized_fname[:80]
+            _last_file_by_chat[chat_id] = sanitized_fname
+
+            asyncio.create_task(asyncio.to_thread(save_file, fname.replace(".xlsx", ".txt"), txt_content, chat_id, len(numbers)))
+            await msg.delete()
+            return
+
+        except Exception as e:
+            logger.error(f"Error processing Excel: {e}", exc_info=True)
+            await msg.edit_text(f"❌ Gagal memproses Excel: {e}")
+            return
+
+    # Is TXT flow
+    text = content.decode("utf-8", errors="replace")
     numbers = parse_numbers_from_text(text)
     if not numbers:
         await msg.edit_text(
@@ -781,11 +996,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    chat_id = update.effective_chat.id
     _user_numbers[chat_id] = numbers
 
     # Simpan file ke GitHub storage (non-blocking, background)
-    safe_fname = fname.replace("_", "\\_").replace("*", "\\*")
     await msg.edit_text(
         f"💾 Menyimpan *{safe_fname}* ({len(numbers)} nomor)...",
         parse_mode="Markdown",
@@ -2297,18 +2510,77 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("⚠️ Akses ditolak. Hanya untuk Admin.", show_alert=True)
             return
 
+        from ivasms import get_credentials, load_ivasms_data, check_ivasms_connection
+        creds = get_credentials()
+        email = creds.get("email") or "Belum di-set"
+        base_url = creds.get("base_url") or "Belum di-set"
+
+        ivasms_data = load_ivasms_data()
+        has_cookies = "Ada ✅" if ivasms_data.get("cookies") else "Tidak Ada ❌"
+
+        # Cek status koneksi secara interaktif (non-blocking)
+        ok, status_msg = await asyncio.to_thread(check_ivasms_connection)
+        conn_indicator = "🟢 Terhubung" if ok else f"🔴 Terputus ({status_msg})"
+
         text = (
-            "🔐 *Admin Panel iVasms*\n"
+            "🔐 *Admin Panel iVasms & 2-Step Login*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Kelola kredensial panel dan stock combo nomor iVasms."
+            "💡 *PROSES LOGIN 2 TAHAP (2x Login):*\n"
+            "1️⃣ *Step 1: Set Kredensial* (Email, Password, Base URL)\n"
+            "    Gunakan command: `/setivasms email|password|base_url`\n"
+            "2️⃣ *Step 2: Set Cookie Session* (Membypass Cloudflare/Proteksi)\n"
+            "    Gunakan command: `/setcookie cookie_data`\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📧 *Email:* `{email}`\n"
+            f"🌐 *Base URL:* `{base_url}`\n"
+            f"🔑 *Cookie Session:* *{has_cookies}*\n"
+            f"🔌 *Status Koneksi:* *{conn_indicator}*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan gunakan tombol di bawah untuk mengelola koneksi:"
         )
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔌 Cek Status Koneksi", callback_data="ivasms_check_conn")],
+            [InlineKeyboardButton("⚙️ Set Kredensial (Step 1)", callback_data="ivasms_creds_prompt")],
+            [InlineKeyboardButton("🔑 Set Cookie Session (Step 2)", callback_data="ivasms_setcookie_prompt")],
+            [InlineKeyboardButton("🗑️ Hapus Cookie Session", callback_data="ivasms_delcookie")],
             [InlineKeyboardButton("📥 Tambah Combo Nomor", callback_data="ivasms_addcombo_prompt")],
             [InlineKeyboardButton("🗑️ Hapus Combo Negara", callback_data="ivasms_delcombo_prompt")],
-            [InlineKeyboardButton("⚙️ Set Kredensial Panel", callback_data="ivasms_creds_prompt")],
             [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
         ])
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_check_conn":
+        from ivasms import check_ivasms_connection
+        # Tampilkan toast alert ke user
+        ok, status_msg = await asyncio.to_thread(check_ivasms_connection)
+        await query.answer(status_msg, show_alert=True)
+        # Refresh panel admin
+        query.data = "ivasms_admin"
+        await button_handler(update, context)
+
+    elif data == "ivasms_setcookie_prompt":
+        await query.edit_message_text(
+            "🔑 *Set Cookie Session iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan kirimkan cookie session Anda di chat menggunakan format:\n"
+            "`/setcookie <cookie_string_atau_json>`\n\n"
+            "💡 Anda bisa mendapatkan cookie dengan masuk ke iVasms di Chrome, lalu copy dari DevTools -> Network -> Request Headers -> Cookie, atau gunakan extension Cookie Exporter.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Batal", callback_data="ivasms_admin")
+            ]])
+        )
+
+    elif data == "ivasms_delcookie":
+        from ivasms import load_ivasms_data, save_ivasms_data
+        ivasms_data = load_ivasms_data()
+        if "cookies" in ivasms_data:
+            del ivasms_data["cookies"]
+            save_ivasms_data(ivasms_data)
+        await query.answer("✅ Cookie session berhasil dihapus!", show_alert=True)
+        # Refresh panel admin
+        query.data = "ivasms_admin"
+        await button_handler(update, context)
 
     elif data == "ivasms_addcombo_prompt":
         await query.edit_message_text(
@@ -2438,8 +2710,8 @@ def main():
     app.add_handler(CommandHandler("addcombo",    cmd_addcombo))
     app.add_handler(CommandHandler("setivasms",   cmd_setivasms))
     app.add_handler(CallbackQueryHandler(button_handler))
-    # Handler untuk upload file .txt
-    app.add_handler(MessageHandler(filters.Document.MimeType("text/plain"), handle_document))
+    # Handler untuk upload file .txt dan .xlsx
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     async def post_init(application: Application):
         await send_startup_notification(application.bot)
@@ -2454,6 +2726,8 @@ def main():
             BotCommand("pair",        "🔗 Tautkan WhatsApp Checker via Pairing Code"),
             BotCommand("search",      "🔍 Cari nomor berdasarkan prefix"),
             BotCommand("ivasms",      "🌍 iVasms Temp Numbers & OTP"),
+            BotCommand("setivasms",   "⚙️ Set kredensial admin iVasms"),
+            BotCommand("setcookie",   "🔑 Set cookie session admin iVasms"),
             BotCommand("update",      "🔄 Cek & update bot dari GitHub"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),
