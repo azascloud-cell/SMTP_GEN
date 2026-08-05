@@ -109,6 +109,63 @@ Buka repo → **Settings** → **Secrets and variables** → **Actions** → **N
 
 ---
 
+## 🎮 Cara Deploy ke Panel Pterodactyl (Tanpa GitHub Actions)
+
+Jika Anda ingin menjalankan bot secara mandiri pada hosting panel Pterodactyl agar tidak bergantung pada GitHub Actions (24/7 tanpa batas limit waktu workflow):
+
+### 1. Persiapan File
+1. Download source code bot ini dalam format `.zip` dari repository GitHub Anda.
+2. Upload file `.zip` tersebut ke File Manager di panel Pterodactyl Anda, lalu extract seluruh file di directory root (`/home/container`).
+
+### 2. Konfigurasi Environment (Startup Settings)
+Pada menu **Startup** di panel Pterodactyl Anda, tambahkan Environment Variables berikut:
+
+| Key | Value / Contoh | Keterangan |
+|-----|----------------|------------|
+| `TELEGRAM_BOT_TOKEN` | `123456:ABC-DEF...` | Token Bot Telegram Anda dari @BotFather |
+| `TELEGRAM_CHAT_ID` | `987654321` | ID Chat Telegram Anda untuk notifikasi |
+| `GH_PAT` | `ghp_xxxxxx` | GitHub Personal Access Token (Opsional, untuk auto-sync storage) |
+| `GITHUB_REPOSITORY` | `username/repo` | Nama repo GitHub Anda (Opsional, untuk auto-sync storage) |
+
+### 3. Setup Node.js & Python di Container (Egg)
+Karena bot ini menggunakan Python (untuk Bot Telegram) dan Node.js (untuk WA Checker), pastikan Anda memilih **Egg** (Docker Image) yang tepat:
+
+* **Rekomendasi:** Gunakan Egg **Python** (versi `3.10`, `3.11` atau `3.12`).
+* Jika panel hosting Anda mendukung, gunakan Docker Image multi-language (yang menyertakan `node` dan `python`).
+* Di File Manager, edit file `requirements.txt` dan pastikan isinya:
+  ```text
+  python-telegram-bot==21.5
+  requests==2.32.3
+  beautifulsoup4==4.15.0
+  soupsieve==2.9.1
+  openpyxl==3.1.5
+  ```
+
+### 4. Menjalankan WhatsApp Checker (Baileys) secara Otomatis
+Untuk menjalankan file `wa_checker.js` secara otomatis di latar belakang sebelum bot utama Python berjalan, buat file bash startup kustom.
+1. Di File Manager, buat file baru bernama `start.sh` (jika belum ada) dan isi dengan kode berikut:
+   ```bash
+   #!/bin/bash
+   echo "Installing NodeJS dependencies..."
+   npm install @whiskeysockets/baileys express qrcode-terminal pino dotenv
+
+   echo "Starting WhatsApp Checker (NodeJS) in background..."
+   node wa_checker.js > wa_checker.log 2>&1 &
+
+   echo "Installing Python dependencies..."
+   pip install -r requirements.txt
+
+   echo "Starting Telegram Bot..."
+   python bot/main.py
+   ```
+2. Pada menu **Startup** Pterodactyl, ubah bagian **Startup Command** menjadi:
+   ```bash
+   bash start.sh
+   ```
+3. Tekan tombol **Console** lalu klik **Start / Restart** server Anda. Pterodactyl akan secara otomatis menginstal seluruh dependency NodeJS & Python, lalu menjalankan bot secara 24/7!
+
+---
+
 ## 📄 Lisensi
 
 MIT License — bebas digunakan dan dimodifikasi.
