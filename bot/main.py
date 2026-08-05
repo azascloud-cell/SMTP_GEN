@@ -65,6 +65,15 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 RUN_ID     = os.environ.get("GITHUB_RUN_ID", "local")
+
+def is_user_admin(chat_id) -> bool:
+    chat_id_str = str(chat_id).strip()
+    if not chat_id_str:
+        return False
+    if ADMIN_CHAT and chat_id_str == str(ADMIN_CHAT).strip():
+        return True
+    admin_ids = [aid.strip() for aid in os.environ.get("ADMIN_IDS", "").split(",") if aid.strip()]
+    return chat_id_str in admin_ids
 REPO       = os.environ.get("GITHUB_REPOSITORY", "SMTP_GEN")
 
 generator = SMTPGenerator()
@@ -150,14 +159,15 @@ async def post_to_testimonial_channel(bot, text: str):
         logger.error(f"Failed to post testimonial to channel {channel_id}: {e}")
 
 
-def main_menu_keyboard(chat_id: int):
+async def main_menu_keyboard(chat_id: int):
     rows = []
     # Nomor Management
     rows.append([
         InlineKeyboardButton("📱 Cek Nomor WA", callback_data="num_info"),
         InlineKeyboardButton("🔍 Cari Prefix", callback_data="search_prompt")
     ])
-    checker_label = "🔗 WA Checker: Terhubung ✅" if is_checker_connected(chat_id) else "🔗 Connect WA Checker"
+    checker_connected = await asyncio.to_thread(is_checker_connected, chat_id)
+    checker_label = "🔗 WA Checker: Terhubung ✅" if checker_connected else "🔗 Connect WA Checker"
     rows.append([InlineKeyboardButton(checker_label, callback_data="connect_wa_info")])
     # Email temp
     rows.append([InlineKeyboardButton("📧 Email Temp (Receive Only)",      callback_data="gen")])
@@ -301,7 +311,9 @@ def build_number_buttons(results: list[dict], chat_id: int) -> InlineKeyboardMar
 # ── Command Handlers ──────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    checker_status = "✅ WA Checker terhubung" if is_checker_connected(chat_id) else "⚠️ WA Checker belum diset"
+    checker_connected = await asyncio.to_thread(is_checker_connected, chat_id)
+    checker_status = "✅ WA Checker terhubung" if checker_connected else "⚠️ WA Checker belum diset"
+    reply_markup_kb = await main_menu_keyboard(chat_id)
     await update.message.reply_text(
         f"🤖 *Bot Management Nomor & SMTP*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -312,7 +324,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔧 *WA Fix* — banding ban WhatsApp\n\n"
         f"Pilih menu di bawah:",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(chat_id),
+        reply_markup=reply_markup_kb,
     )
 
 
@@ -619,8 +631,7 @@ async def cmd_ivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows.append(row)
 
         # Admin button
-        is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
-        if is_admin:
+        if is_user_admin(chat_id):
             rows.append([InlineKeyboardButton("🔐 Admin Panel iVasms", callback_data="ivasms_admin")])
 
         rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
@@ -632,8 +643,7 @@ async def cmd_ivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_addcombo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
-    if not is_admin:
+    if not is_user_admin(chat_id):
         await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
         return
 
@@ -680,8 +690,7 @@ async def cmd_addcombo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
-    if not is_admin:
+    if not is_user_admin(chat_id):
         await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
         return
 
@@ -721,8 +730,7 @@ async def cmd_setivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
-    if not is_admin:
+    if not is_user_admin(chat_id):
         await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
         return
 
@@ -795,41 +803,51 @@ async def process_excel_file_bytes(file_content: bytes, chat_id: int) -> tuple[b
     # Try to find header row and column indexes
     header_row_idx = None
     number_col_idx = None
-    range_col_idx = None
+    original_headers = []
 
-    # Scan first 15 rows for headers
+    # Scan first 15 rows for headers. We want to find a row where at least one cell contains the word "number" (case-insensitive)
     for r in range(1, 15):
-        row_vals = [str(ws.cell(row=r, column=c).value).strip().lower() if ws.cell(row=r, column=c).value else "" for c in range(1, 15)]
-        if "number" in row_vals:
-            number_col_idx = row_vals.index("number") + 1
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+        row_str_vals = [str(v).strip().lower() if v is not None else "" for v in row_vals]
+        if "number" in row_str_vals:
             header_row_idx = r
-            if "range" in row_vals:
-                range_col_idx = row_vals.index("range") + 1
-            elif "provider" in row_vals:
-                range_col_idx = row_vals.index("provider") + 1
-            elif "carrier" in row_vals:
-                range_col_idx = row_vals.index("carrier") + 1
+            number_col_idx = row_str_vals.index("number") + 1
+            original_headers = [
+                str(ws.cell(row=r, column=c).value).strip() if ws.cell(row=r, column=c).value is not None else f"Column {c}"
+                for c in range(1, ws.max_column + 1)
+            ]
+            # Strip trailing empty/None column names
+            while original_headers and (original_headers[-1].startswith("Column ") or not original_headers[-1]) and ws.cell(row=r, column=len(original_headers)).value is None:
+                original_headers.pop()
             break
 
-    # Default fallback if header not found
+    # Fallback if no "number" column header found
     if not number_col_idx:
-        # Search for first numeric cell that looks like a phone number
+        # Search for first cell looking like a phone number
         for r in range(1, min(ws.max_row + 1, 20)):
             for c in range(1, min(ws.max_column + 1, 10)):
                 cell_val = str(ws.cell(row=r, column=c).value or "").strip()
                 if cell_val.isdigit() and len(cell_val) >= 8:
                     number_col_idx = c
-                    if c > 1:
-                        range_col_idx = c - 1
+                    header_row_idx = r - 1 if r > 1 else None
                     break
             if number_col_idx:
                 break
 
-    # Ultimate fallback
     if not number_col_idx:
         number_col_idx = 2
-        range_col_idx = 1
-        header_row_idx = 3
+        header_row_idx = None
+
+    if not original_headers:
+        if header_row_idx:
+            original_headers = [
+                str(ws.cell(row=header_row_idx, column=c).value).strip() if ws.cell(row=header_row_idx, column=c).value is not None else f"Column {c}"
+                for c in range(1, ws.max_column + 1)
+            ]
+            while original_headers and (original_headers[-1].startswith("Column ") or not original_headers[-1]) and ws.cell(row=header_row_idx, column=len(original_headers)).value is None:
+                original_headers.pop()
+        else:
+            original_headers = ["Range", "Number"]
 
     start_row = header_row_idx + 1 if header_row_idx else 1
 
@@ -838,20 +856,28 @@ async def process_excel_file_bytes(file_content: bytes, chat_id: int) -> tuple[b
     out_ws = out_wb.active
     out_ws.title = "Cleaned Numbers"
 
-    # Set headers
-    out_ws.cell(row=1, column=1, value="Flag")
-    out_ws.cell(row=1, column=2, value="Number")
-    out_ws.cell(row=1, column=3, value="Provider")
-    out_ws.cell(row=1, column=4, value="Status")
+    # Set headers: 'Flag' (Column 1) + all original headers + 'WA Status' (Last column)
+    out_headers = ["Flag"] + original_headers + ["WA Status"]
+    for c, h_name in enumerate(out_headers, 1):
+        out_ws.cell(row=1, column=c, value=h_name)
 
     # Bold the headers
     from openpyxl.styles import Font
     bold_font = Font(bold=True)
-    for c in range(1, 5):
+    for c in range(1, len(out_headers) + 1):
         out_ws.cell(row=1, column=c).font = bold_font
 
-    for col_letter, width in [("A", 10), ("B", 22), ("C", 25), ("D", 25)]:
-        out_ws.column_dimensions[col_letter].width = width
+    # Set column widths dynamically
+    from openpyxl.utils import get_column_letter
+    out_ws.column_dimensions["A"].width = 10  # Flag Column
+    for c_idx, h_name in enumerate(original_headers, 2):
+        col_letter = get_column_letter(c_idx)
+        if h_name.lower() == "number":
+            out_ws.column_dimensions[col_letter].width = 22
+        else:
+            out_ws.column_dimensions[col_letter].width = 18
+    status_col_letter = get_column_letter(len(original_headers) + 2)
+    out_ws.column_dimensions[status_col_letter].width = 25
 
     out_row_idx = 2
     cleaned_numbers = []
@@ -859,14 +885,15 @@ async def process_excel_file_bytes(file_content: bytes, chat_id: int) -> tuple[b
     rows_to_process = []
     for r in range(start_row, ws.max_row + 1):
         num_val = ws.cell(row=r, column=number_col_idx).value
-        range_val = ws.cell(row=r, column=range_col_idx).value if range_col_idx else ""
         if num_val is not None and str(num_val).strip() != "":
-            rows_to_process.append((num_val, range_val))
+            # Store full original row data up to the length of original_headers
+            row_data = [ws.cell(row=r, column=c).value for c in range(1, len(original_headers) + 1)]
+            rows_to_process.append((num_val, row_data))
 
     # Limit real-time WA checking to prevent long timeouts
     check_status = len(rows_to_process) <= 150
 
-    for num_val, range_val in rows_to_process:
+    for num_val, row_data in rows_to_process:
         num_str = str(num_val).strip()
         if "." in num_str:
             num_str = num_str.split(".")[0]
@@ -887,10 +914,6 @@ async def process_excel_file_bytes(file_content: bytes, chat_id: int) -> tuple[b
         # Get country details for the flag
         c_info = get_country_info(normalized_num)
         flag = c_info.get("flag", "🌍")
-        country_name = c_info.get("name", "Unknown")
-
-        # Determine range/provider string
-        range_str = str(range_val).strip() if range_val else country_name
 
         # Check WhatsApp status
         status_str = "Terdaftar (Unlinked)"
@@ -898,10 +921,19 @@ async def process_excel_file_bytes(file_content: bytes, chat_id: int) -> tuple[b
             reg = await asyncio.to_thread(check_wa_registered, normalized_num, chat_id)
             status_str = status_label(reg)
 
+        # Write Flag (Column 1)
         out_ws.cell(row=out_row_idx, column=1, value=flag)
-        out_ws.cell(row=out_row_idx, column=2, value=normalized_num)
-        out_ws.cell(row=out_row_idx, column=3, value=range_str)
-        out_ws.cell(row=out_row_idx, column=4, value=status_str)
+
+        # Write original columns (Columns 2 to N+1)
+        for c_idx, val in enumerate(row_data):
+            col_pos = c_idx + 1
+            if col_pos == number_col_idx:
+                out_ws.cell(row=out_row_idx, column=col_pos + 1, value=normalized_num)
+            else:
+                out_ws.cell(row=out_row_idx, column=col_pos + 1, value=val)
+
+        # Write WA Status (Last column)
+        out_ws.cell(row=out_row_idx, column=len(original_headers) + 2, value=status_str)
 
         out_row_idx += 1
 
@@ -2393,15 +2425,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_donasi(update, context)
 
     elif data == "back_main":
-        checker_ok = is_checker_connected(chat_id)
+        checker_ok = await asyncio.to_thread(is_checker_connected, chat_id)
         ch_label   = "✅ WA Checker terhubung" if checker_ok else "⚠️ WA Checker belum diset"
+        reply_markup_kb = await main_menu_keyboard(chat_id)
         await query.edit_message_text(
             f"🤖 *Bot Management Nomor & SMTP*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📱 {ch_label}\n\n"
             f"Pilih menu:",
             parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(chat_id),
+            reply_markup=reply_markup_kb,
         )
 
     # ── iVasms Callback Query Handlers ────────────────────────────────────────
@@ -2452,8 +2485,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 rows.append(row)
 
             # Admin button
-            is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
-            if is_admin:
+            if is_user_admin(chat_id):
                 rows.append([InlineKeyboardButton("🔐 Admin Panel iVasms", callback_data="ivasms_admin")])
 
             rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
@@ -2505,8 +2537,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
     elif data == "ivasms_admin":
-        is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
-        if not is_admin:
+        if not is_user_admin(chat_id):
             await query.answer("⚠️ Akses ditolak. Hanya untuk Admin.", show_alert=True)
             return
 
@@ -2523,20 +2554,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn_indicator = "🟢 Terhubung" if ok else f"🔴 Terputus ({status_msg})"
 
         text = (
-            "🔐 *Admin Panel iVasms & 2-Step Login*\n"
+            "🔐 *Admin Panel iVasms & Login 2 Tahap (2x Login)*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "💡 *PROSES LOGIN 2 TAHAP (2x Login):*\n"
-            "1️⃣ *Step 1: Set Kredensial* (Email, Password, Base URL)\n"
-            "    Gunakan command: `/setivasms email|password|base_url`\n"
-            "2️⃣ *Step 2: Set Cookie Session* (Membypass Cloudflare/Proteksi)\n"
-            "    Gunakan command: `/setcookie cookie_data`\n"
+            "⚙️ *Sistem Login iVasms menggunakan 2 Tahap:*\n"
+            "1️⃣ *TAHAP 1: Set Kredensial Dasar (Email & Password)*\n"
+            "    Ini untuk masuk ke API/Dashboard secara standar.\n"
+            "    *Format:* `/setivasms email|password|base_url`\n\n"
+            "2️⃣ *TAHAP 2: Set Cookie Session*\n"
+            "    Karena panel iVasms seringkali dilindungi oleh Cloudflare / DDoS-Protection, bot membutuhkan Cookie Session dari browser aktif Anda untuk dapat menarik data OTP.\n"
+            "    *Format:* `/setcookie <raw_cookie_atau_json>`\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 *CARA MENDAPATKAN COOKIE:* \n"
+            "1. Buka situs iVasms Anda (misal `https://ivasms.com`) di Google Chrome.\n"
+            "2. Tekan tombol `F12` di keyboard untuk membuka DevTools, lalu pilih tab *Network*.\n"
+            "3. Lakukan login ke akun iVasms Anda.\n"
+            "4. Klik salah satu request (misalnya `received`), scroll ke bawah pada kolom kanan hingga menemukan *Request Headers*.\n"
+            "5. Cari bagian *Cookie:* dan salin (copy) seluruh nilai teks setelahnya.\n"
+            "6. Kirim ke bot ini dengan format: `/setcookie <nilai_cookie>`.\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"📧 *Email:* `{email}`\n"
             f"🌐 *Base URL:* `{base_url}`\n"
             f"🔑 *Cookie Session:* *{has_cookies}*\n"
-            f"🔌 *Status Koneksi:* *{conn_indicator}*\n"
+            f"🔌 *Koneksi Sekarang:* *{conn_indicator}*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Silakan gunakan tombol di bawah untuk mengelola koneksi:"
+            "Silakan gunakan tombol di bawah untuk mengelola koneksi dan combo nomor:"
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔌 Cek Status Koneksi", callback_data="ivasms_check_conn")],

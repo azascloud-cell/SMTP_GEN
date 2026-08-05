@@ -45,23 +45,24 @@ async def test_process_excel_file_bytes():
     out_wb = openpyxl.load_workbook(io.BytesIO(output_bytes))
     out_ws = out_wb.active
 
-    # Row 1 is header: Flag, Number, Provider, Status
+    # Headers are: Flag, Range, Number, A2P, WA Status
     assert out_ws.cell(row=1, column=1).value == "Flag"
-    assert out_ws.cell(row=1, column=2).value == "Number"
-    assert out_ws.cell(row=1, column=3).value == "Provider"
-    assert out_ws.cell(row=1, column=4).value == "Status"
+    assert out_ws.cell(row=1, column=2).value == "Range"
+    assert out_ws.cell(row=1, column=3).value == "Number"
+    assert out_ws.cell(row=1, column=4).value == "A2P"
+    assert out_ws.cell(row=1, column=5).value == "WA Status"
 
-    # Row 2 should be Egypt: 🇪🇬, +201551060331, EGYPT 13450
+    # Row 2 should be Egypt: 🇪🇬, EGYPT 13450, +201551060331
     assert out_ws.cell(row=2, column=1).value == "🇪🇬"
-    assert out_ws.cell(row=2, column=2).value == "+201551060331"
-    assert out_ws.cell(row=2, column=3).value == "EGYPT 13450"
+    assert out_ws.cell(row=2, column=2).value == "EGYPT 13450"
+    assert out_ws.cell(row=2, column=3).value == "+201551060331"
 
-    # Row 3 should be Indo: 🇮🇩, +62812345678, INDO combo
+    # Row 3 should be Indo: 🇮🇩, INDO combo, +62812345678
     assert out_ws.cell(row=3, column=1).value == "🇮🇩"
-    assert out_ws.cell(row=3, column=2).value == "+62812345678"
-    assert out_ws.cell(row=3, column=3).value == "INDO combo"
+    assert out_ws.cell(row=3, column=2).value == "INDO combo"
+    assert out_ws.cell(row=3, column=3).value == "+62812345678"
 
-    # Row 4 should be US: 🇺🇸, +12025550123, US combo
+    # Row 4 should be US: 🇺🇸, US combo, +12025550123
     assert out_ws.cell(row=4, column=1).value == "🇺🇸"
-    assert out_ws.cell(row=4, column=2).value == "+12025550123"
-    assert out_ws.cell(row=4, column=3).value == "US combo"
+    assert out_ws.cell(row=4, column=2).value == "US combo"
+    assert out_ws.cell(row=4, column=3).value == "+12025550123"
