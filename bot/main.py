@@ -23,6 +23,7 @@ from number_manager import (
     pick_random,
     status_emoji,
     status_label,
+    search_by_prefix,
 )
 from smtp_auto_generator import (
     MAILERSEND_API_KEY,
@@ -148,7 +149,10 @@ async def post_to_testimonial_channel(bot, text: str):
 def main_menu_keyboard(chat_id: int):
     rows = []
     # Nomor Management
-    rows.append([InlineKeyboardButton("📱 Cek Nomor WA",               callback_data="num_info")])
+    rows.append([
+        InlineKeyboardButton("📱 Cek Nomor WA", callback_data="num_info"),
+        InlineKeyboardButton("🔍 Cari Prefix", callback_data="search_prompt")
+    ])
     checker_label = "🔗 WA Checker: Terhubung ✅" if is_checker_connected(chat_id) else "🔗 Connect WA Checker"
     rows.append([InlineKeyboardButton(checker_label, callback_data="connect_wa_info")])
     # Email temp
@@ -160,6 +164,8 @@ def main_menu_keyboard(chat_id: int):
     rows.append([InlineKeyboardButton("📂 Akun SMTP",                      callback_data="list_smtp")])
     # WhatsApp Fix
     rows.append([InlineKeyboardButton("🔧 WhatsApp Fix (/fix +nomor)",     callback_data="fix_info")])
+    # iVasms Temp Numbers
+    rows.append([InlineKeyboardButton("🌍 iVasms Temp Numbers (OTP)",       callback_data="ivasms_main")])
     # Update & Info
     rows.append([InlineKeyboardButton("🔄 Cek & Update Bot",               callback_data="check_update")])
     rows.append([InlineKeyboardButton("❓ Cara Pakai",  callback_data="howto"),
@@ -494,6 +500,219 @@ async def cmd_donasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    prefix = " ".join(context.args).strip() if context.args else ""
+    if not prefix:
+        await update.message.reply_text(
+            "🔍 *Cari Nomor Berdasarkan Prefix*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/search <prefix>`\n"
+            "Contoh: `/search 628` atau `/search +228`\n\n"
+            "Bot akan mencari semua nomor di file .txt yang Anda upload yang dimulai dengan prefix tersebut.",
+            parse_mode="Markdown",
+        )
+        return
+
+    msg = await update.message.reply_text("🔍 Sedang mencari nomor...")
+    results = await asyncio.to_thread(search_by_prefix, prefix, chat_id)
+
+    if not results:
+        await msg.edit_text(
+            f"❌ Tidak ditemukan nomor yang berawalan dengan prefix `{prefix}`.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")
+            ]])
+        )
+        return
+
+    # Check status WA for these matched numbers
+    # We can check them using check_numbers or we can check only first few to speed things up
+    # Let's cap results to 20 numbers to keep keyboard size reasonable
+    limit = 20
+    matched_subset = results[:limit]
+    phones = [r["phone"] for r in matched_subset]
+
+    # Perform checker lookup in background
+    checked_results = await asyncio.to_thread(check_numbers, phones, chat_id)
+
+    lines = [
+        f"🔍 *Hasil Pencarian Prefix:* `{prefix}`",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Total kecocokan: {len(results)} nomor",
+    ]
+    if len(results) > limit:
+        lines.append(f"_(Hanya menampilkan {limit} hasil pertama)_")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    # Build keyboard
+    rows = []
+    for r in checked_results:
+        phone = r["phone"]
+        icon = status_emoji(r["registered"])
+        rows.append([InlineKeyboardButton(f"{icon} 📋 {phone}", callback_data=f"copy_num_{phone}")])
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━\n💡 Klik tombol nomor di bawah untuk melihat detail Gacha & Template Banding.")
+    rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+
+    await msg.edit_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def cmd_ivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    # Taruh import di dalam agar aman dari dependency loop
+    from ivasms import get_assignment, list_combos
+    from number_manager import get_country_info, COUNTRY_DATA
+
+    assign = get_assignment(chat_id)
+
+    if assign:
+        phone = assign["phone"]
+        c_info = get_country_info(phone)
+        flag = c_info["flag"]
+        name = c_info["name"]
+        assigned_dt = datetime.fromtimestamp(assign["assigned_at"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        text = (
+            f"🌍 *iVasms Temp Number & OTP*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 *Nomor Aktif:* `{phone}`\n"
+            f"🌍 *Negara:* {flag} {name}\n"
+            f"📅 *Ditugaskan:* `{assigned_dt}`\n\n"
+            f"⏳ *Status:* Menunggu OTP... Bot akan secara otomatis mengirimkan pesan baru ke sini saat SMS diterima di panel iVasms."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Batalkan / Lepas Nomor", callback_data="ivasms_release")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+        ])
+    else:
+        combos = list_combos()
+        lines = [
+            "🌍 *iVasms Temp Number & OTP*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "Silakan pilih negara di bawah ini untuk mendapatkan nomor sementara baru:",
+        ]
+
+        rows = []
+        row = []
+        for code, num_list in combos.items():
+            if not num_list:
+                continue
+            c_data = COUNTRY_DATA.get(code, {"flag": "🌍", "name": f"Region (+{code})"})
+            btn_text = f"{c_data['flag']} {c_data['name']} ({len(num_list)})"
+            row.append(InlineKeyboardButton(btn_text, callback_data=f"ivasms_get_{code}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+
+        # Admin button
+        is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+        if is_admin:
+            rows.append([InlineKeyboardButton("🔐 Admin Panel iVasms", callback_data="ivasms_admin")])
+
+        rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+        kb = InlineKeyboardMarkup(rows)
+        text = "\n".join(lines)
+
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cmd_addcombo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+    if not is_admin:
+        await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "⚠️ *Format /addcombo Salah!*\n"
+            "Format: `/addcombo <kode_negara> <nomor1,nomor2,...>`\n"
+            "Atau upload file `.txt` nomor terlebih dahulu, lalu ketik `/addcombo <kode_negara>` untuk mengimpor dari file tersebut.",
+            parse_mode="Markdown"
+        )
+        return
+
+    code = args[0].strip()
+
+    # Check if there is numbers argument
+    if len(args) > 1:
+        numbers_raw = " ".join(args[1:]).split(",")
+        numbers = [n.strip() for n in numbers_raw if n.strip()]
+    else:
+        # Import from user's last uploaded file
+        numbers = _user_numbers.get(chat_id, [])
+        if not numbers:
+            await update.message.reply_text("❌ Tidak ada file nomor terbaru yang diupload. Silakan upload file `.txt` terlebih dahulu.")
+            return
+
+    from ivasms import add_combo
+    success = await asyncio.to_thread(add_combo, code, numbers)
+    if success:
+        await update.message.reply_text(
+            f"✅ *Sukses Menambahkan Combo iVasms!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌍 Negara: `{code}`\n"
+            f"🔢 Ditambahkan: `{len(numbers)}` nomor\n\n"
+            f"Nomor siap dialokasikan oleh user!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌍 Menu iVasms", callback_data="ivasms_main")
+            ]])
+        )
+    else:
+        await update.message.reply_text("❌ Gagal menambahkan combo. Pastikan nomor valid.")
+
+
+async def cmd_setivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+    if not is_admin:
+        await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
+        return
+
+    args_raw = " ".join(context.args).strip() if context.args else ""
+    if "|" not in args_raw:
+        await update.message.reply_text(
+            "⚙️ *Set Kredensial iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/setivasms email|password|base_url`\n\n"
+            "Contoh:\n"
+            "`/setivasms admin@example.com|securepass|https://ivas.tempnum.qzz.io`",
+            parse_mode="Markdown"
+        )
+        return
+
+    parts = args_raw.split("|")
+    if len(parts) < 2:
+        await update.message.reply_text("⚠️ Format salah. Minimal sediakan email dan password dipisah dengan `|`.")
+        return
+
+    email = parts[0].strip()
+    password = parts[1].strip()
+    base_url = parts[2].strip() if len(parts) > 2 else None
+
+    from ivasms import update_credentials
+    await asyncio.to_thread(update_credentials, email, password, base_url)
+
+    await update.message.reply_text(
+        "✅ *Kredensial iVasms Berhasil Disimpan!*\n"
+        "Bot akan mencoba masuk ke dashboard pada permintaan OTP berikutnya.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔐 Admin Panel", callback_data="ivasms_admin")
+        ]])
+    )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1034,6 +1253,79 @@ async def auto_update_loop(bot: Bot):
         await asyncio.sleep(1800)
 
 
+async def ivasms_poll_loop(bot: Bot):
+    logger.info("iVasms polling background loop dimulai...")
+    # Taruh import di dalam agar terisolasi dari global namespace dan ModuleNotFoundError pada startup awal
+    from ivasms import fetch_ivasms_messages, get_user_by_number, log_otp, detect_service, extract_otp
+
+    # Store processed message IDs to prevent double notification within the same run
+    processed_msg_ids = set()
+
+    while True:
+        try:
+            # Fetch latest messages from iVasms Panel
+            messages = await asyncio.to_thread(fetch_ivasms_messages)
+            if messages:
+                for msg in messages:
+                    msg_id = msg["id"]
+                    if msg_id in processed_msg_ids:
+                        continue
+
+                    processed_msg_ids.add(msg_id)
+                    phone = msg["phone"]
+                    text = msg["text"]
+
+                    # Match against active user assignment
+                    chat_id = get_user_by_number(phone)
+                    if chat_id:
+                        otp_code = extract_otp(text)
+                        service_name = detect_service(text)
+
+                        # Log to persistent storage
+                        await asyncio.to_thread(log_otp, phone, otp_code, text, chat_id)
+
+                        # Send notification to User
+                        try:
+                            kb = InlineKeyboardMarkup([
+                                [InlineKeyboardButton(f"🔑 Copy OTP: {otp_code}", callback_data="noop")],
+                                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+                            ])
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    f"🎉 *OTP iVasms Baru Diterima!*\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📱 Nomor: `{phone}`\n"
+                                    f"🌐 Layanan: *{service_name}*\n"
+                                    f"🔑 Code OTP: `{otp_code}`\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"✉️ SMS Full:\n`{text}`"
+                                ),
+                                parse_mode="Markdown",
+                                reply_markup=kb
+                            )
+                            logger.info(f"iVasms OTP successfully forwarded to user {chat_id} for number {phone}")
+                        except Exception as e:
+                            logger.error(f"Gagal mengirim iVasms OTP ke user {chat_id}: {e}")
+
+                        # Send to Testimonial Channel / Group
+                        testimonial_text = (
+                            f"🌐 *iVasms SMS OTP DITERIMA* 🌐\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📱 *Nomor:* `{phone}`\n"
+                            f"🌐 *Layanan:* *{service_name}*\n"
+                            f"🔑 *OTP:* `{otp_code}`\n"
+                            f"✅ *Keterangan:* Sukses menerima OTP dari iVasms Panel!\n"
+                            f"━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        asyncio.create_task(post_to_testimonial_channel(bot, testimonial_text))
+
+        except Exception as e:
+            logger.error(f"Error in ivasms_poll_loop: {e}")
+
+        await asyncio.sleep(45) # check every 45 seconds
+
+
 # ── Callback Query Handler ─────────────────────────────────────────────────────
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
@@ -1042,7 +1334,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
 
     # ── Number Management ─────────────────────────────────────────────────────
-    if data == "num_info":
+    if data == "search_prompt":
+        await query.edit_message_text(
+            "🔍 *Cari Nomor Berdasarkan Prefix*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan ketik perintah `/search <prefix>` di chat ini untuk mencari nomor.\n\n"
+            "Contoh:\n"
+            "• `/search 628` (Mencari nomor Indonesia)\n"
+            "• `/search +228` (Mencari nomor Togo)\n\n"
+            "💡 Bot akan memindai seluruh file .txt nomor yang Anda upload.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]])
+        )
+        return
+
+    elif data == "num_info":
         # Tampilkan daftar file tersimpan + opsi upload baru
         await query.edit_message_text("⏳ Memuat daftar file...")
         files = await asyncio.to_thread(list_files, chat_id)
@@ -1883,6 +2191,181 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu_keyboard(chat_id),
         )
 
+    # ── iVasms Callback Query Handlers ────────────────────────────────────────
+    elif data == "ivasms_main":
+        from ivasms import get_assignment, list_combos
+        from number_manager import get_country_info, COUNTRY_DATA
+
+        assign = get_assignment(chat_id)
+        if assign:
+            phone = assign["phone"]
+            c_info = get_country_info(phone)
+            flag = c_info["flag"]
+            name = c_info["name"]
+            assigned_dt = datetime.fromtimestamp(assign["assigned_at"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            text = (
+                f"🌍 *iVasms Temp Number & OTP*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 *Nomor Aktif:* `{phone}`\n"
+                f"🌍 *Negara:* {flag} {name}\n"
+                f"📅 *Ditugaskan:* `{assigned_dt}`\n\n"
+                f"⏳ *Status:* Menunggu OTP... Bot akan secara otomatis mengirimkan pesan baru ke sini saat SMS diterima di panel iVasms."
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Batalkan / Lepas Nomor", callback_data="ivasms_release")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+            ])
+        else:
+            combos = list_combos()
+            lines = [
+                "🌍 *iVasms Temp Number & OTP*",
+                "━━━━━━━━━━━━━━━━━━━━",
+                "Silakan pilih negara di bawah ini untuk mendapatkan nomor sementara baru:",
+            ]
+
+            rows = []
+            row = []
+            for code, num_list in combos.items():
+                if not num_list:
+                    continue
+                c_data = COUNTRY_DATA.get(code, {"flag": "🌍", "name": f"Region (+{code})"})
+                btn_text = f"{c_data['flag']} {c_data['name']} ({len(num_list)})"
+                row.append(InlineKeyboardButton(btn_text, callback_data=f"ivasms_get_{code}"))
+                if len(row) == 2:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+
+            # Admin button
+            is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+            if is_admin:
+                rows.append([InlineKeyboardButton("🔐 Admin Panel iVasms", callback_data="ivasms_admin")])
+
+            rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+            kb = InlineKeyboardMarkup(rows)
+            text = "\n".join(lines)
+
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_release":
+        from ivasms import release_number
+        await asyncio.to_thread(release_number, chat_id)
+        await query.answer("✅ Nomor berhasil dilepas!")
+        # Redirect back to main
+        query.data = "ivasms_main"
+        await button_handler(update, context)
+
+    elif data.startswith("ivasms_get_"):
+        code = data[len("ivasms_get_"):]
+        from ivasms import assign_number
+        from number_manager import get_country_info
+
+        assign = await asyncio.to_thread(assign_number, chat_id, code)
+        if not assign:
+            await query.edit_message_text(
+                "❌ *Gagal Alokasi Nomor*\n━━━━━━━━━━━━━━━━━━━━\n\nTidak ada nomor yang tersedia untuk negara ini saat ini.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
+                ])
+            )
+            return
+
+        phone = assign["phone"]
+        c_info = get_country_info(phone)
+        flag = c_info["flag"]
+        name = c_info["name"]
+
+        text = (
+            f"✅ *Nomor Berhasil Dialokasikan!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 *Nomor:* `{phone}`\n"
+            f"🌍 *Negara:* {flag} {name}\n\n"
+            f"⏳ *Status:* Menunggu OTP... Bot akan mendeteksi OTP secara real-time dan langsung memberi tahu Anda!"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Batalkan / Lepas Nomor", callback_data="ivasms_release")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
+        ])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_admin":
+        is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+        if not is_admin:
+            await query.answer("⚠️ Akses ditolak. Hanya untuk Admin.", show_alert=True)
+            return
+
+        text = (
+            "🔐 *Admin Panel iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Kelola kredensial panel dan stock combo nomor iVasms."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Tambah Combo Nomor", callback_data="ivasms_addcombo_prompt")],
+            [InlineKeyboardButton("🗑️ Hapus Combo Negara", callback_data="ivasms_delcombo_prompt")],
+            [InlineKeyboardButton("⚙️ Set Kredensial Panel", callback_data="ivasms_creds_prompt")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
+        ])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_addcombo_prompt":
+        await query.edit_message_text(
+            "📥 *Tambah Combo Nomor*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan kirimkan format berikut di chat:\n"
+            "`/addcombo <kode_negara> <nomor1,nomor2,...>`\n\n"
+            "Contoh:\n"
+            "`/addcombo 62 +628123456,+6281234567`\n\n"
+            "Atau upload file `.txt` nomor terlebih dahulu, lalu ketik `/addcombo <kode_negara>` untuk mengimpor dari file tersebut.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Batal", callback_data="ivasms_admin")
+            ]])
+        )
+
+    elif data == "ivasms_delcombo_prompt":
+        from ivasms import list_combos
+        combos = list_combos()
+
+        lines = [
+            "🗑️ *Hapus Combo Negara*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "Pilih combo negara yang ingin Anda hapus secara permanen:",
+        ]
+        rows = []
+        for code, num_list in combos.items():
+            from number_manager import COUNTRY_DATA
+            c_data = COUNTRY_DATA.get(code, {"flag": "🌍", "name": f"Region (+{code})"})
+            btn_text = f"🗑️ {c_data['flag']} {c_data['name']} ({len(num_list)})"
+            rows.append([InlineKeyboardButton(btn_text, callback_data=f"ivasms_del_{code}")])
+
+        rows.append([InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_admin")])
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
+    elif data.startswith("ivasms_del_"):
+        code = data[len("ivasms_del_"):]
+        from ivasms import delete_combo
+        await asyncio.to_thread(delete_combo, code)
+        await query.answer(f"✅ Combo {code} berhasil dihapus!")
+        query.data = "ivasms_delcombo_prompt"
+        await button_handler(update, context)
+
+    elif data == "ivasms_creds_prompt":
+        await query.edit_message_text(
+            "⚙️ *Set Kredensial Panel iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan kirimkan kredensial dalam format berikut di chat:\n"
+            "`/setivasms email|password|base_url`\n\n"
+            "Contoh:\n"
+            "`/setivasms admin@example.com|securepass|https://ivas.tempnum.qzz.io`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Batal", callback_data="ivasms_admin")
+            ]])
+        )
+
 
 # ── Startup Notification ───────────────────────────────────────────────────────
 _STARTUP_NOTIF_FILE = Path(__file__).parent / ".last_startup_run_id"
@@ -1950,6 +2433,10 @@ def main():
     app.add_handler(CommandHandler("autogen",     cmd_autogen))
     app.add_handler(CommandHandler("update",      cmd_update))
     app.add_handler(CommandHandler("pair",        cmd_pair))
+    app.add_handler(CommandHandler("search",      cmd_search))
+    app.add_handler(CommandHandler("ivasms",      cmd_ivasms))
+    app.add_handler(CommandHandler("addcombo",    cmd_addcombo))
+    app.add_handler(CommandHandler("setivasms",   cmd_setivasms))
     app.add_handler(CallbackQueryHandler(button_handler))
     # Handler untuk upload file .txt
     app.add_handler(MessageHandler(filters.Document.MimeType("text/plain"), handle_document))
@@ -1965,12 +2452,15 @@ def main():
             BotCommand("fix",         "🔧 Banding ban WhatsApp"),
             BotCommand("autogen",     "🤖 Auto generate SMTP via backend"),
             BotCommand("pair",        "🔗 Tautkan WhatsApp Checker via Pairing Code"),
+            BotCommand("search",      "🔍 Cari nomor berdasarkan prefix"),
+            BotCommand("ivasms",      "🌍 iVasms Temp Numbers & OTP"),
             BotCommand("update",      "🔄 Cek & update bot dari GitHub"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),
         ])
         asyncio.create_task(imap_monitor_loop(application.bot))
         asyncio.create_task(auto_update_loop(application.bot))
+        asyncio.create_task(ivasms_poll_loop(application.bot))
 
     app.post_init = post_init
     logger.info("Bot mulai polling...")

@@ -325,3 +325,51 @@ def get_masked_and_prefix(phone: str) -> tuple[str, str]:
         masked = digits
 
     return masked, prefix
+
+
+def search_by_prefix(prefix: str, chat_id: int) -> list[dict]:
+    """
+    Search for numbers starting with `prefix` across all files uploaded by `chat_id`.
+    Returns list of: {"phone": phone, "filename": original_name, "registered": None}
+    """
+    from number_files import list_files, load_file
+
+    norm_prefix = re.sub(r"[^\d+]", "", prefix.strip())
+    if not norm_prefix:
+        return []
+
+    prefix_clean = norm_prefix.lstrip("+")
+
+    results = []
+    seen = set()
+
+    files = list_files(chat_id)
+    for f in files:
+        filename = f["filename"]
+        original_name = f.get("original_name", filename)
+
+        lines = load_file(filename, chat_id)
+        if not lines:
+            continue
+
+        for line in lines:
+            line_clean = line.strip()
+            if not line_clean or line_clean.startswith("#"):
+                continue
+
+            norm_num = _normalize(line_clean)
+            if not norm_num:
+                continue
+
+            num_clean = norm_num.lstrip("+")
+
+            if num_clean.startswith(prefix_clean) or norm_num.startswith(norm_prefix):
+                if norm_num not in seen:
+                    seen.add(norm_num)
+                    results.append({
+                        "phone": norm_num,
+                        "filename": original_name,
+                        "registered": None
+                    })
+
+    return results
