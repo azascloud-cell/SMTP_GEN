@@ -19,18 +19,7 @@
     "verified": true,
     "imap_ok": true
   },
-  "6874843931": {
-    "bagoxgun@gmail.com": {
-      "password": "ztty tmzb dmrb bkor",
-      "provider": "gmail.com",
-      "smtp_host": "smtp.gmail.com",
-      "smtp_port": 587,
-      "imap_host": "imap.gmail.com",
-      "imap_port": 993,
-      "verified": true,
-      "imap_ok": true
-    }
-  },
+  "6874843931": {},
   "mailersend:test-q3enl6k932742vwr.mlsender.net": {
     "password": "mlsn.d6f22d3760a89d58ceb637120911bcf040a2df1fb0c666722fa73eb79046b7f7",
     "username": "test-q3enl6k932742vwr.mlsender.net",
