@@ -1,1 +1,3 @@
 Merged PR #25: Feat/ivasms admin and excel format — integrated and resolved conflicts.
+
+CI heartbeat: triggered workflow run to start bot at 2026-08-06T09:40:00Z
