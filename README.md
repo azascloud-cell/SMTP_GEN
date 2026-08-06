@@ -149,12 +149,11 @@ Untuk menjalankan file `wa_checker.js` secara otomatis di latar belakang sebelum
    echo "Installing NodeJS dependencies..."
    npm install @whiskeysockets/baileys express qrcode-terminal pino dotenv
 
-   echo "Starting WhatsApp Checker (NodeJS) in background..."
-   node wa_checker.js > wa_checker.log 2>&1 &
+    echo "Starting WhatsApp Checker (NodeJS) in background..."
+    node wa_checker.js > wa_checker.log 2>&1 &
 
-   echo "Installing Python dependencies..."
-   pip install -r requirements.txt
-
+    echo "Installing Python dependencies..."
+    pip install -r requirements.txt
    echo "Starting Telegram Bot..."
    python bot/main.py
    ```
