@@ -20,16 +20,6 @@
     "imap_ok": true
   },
   "6874843931": {
-    "azascloud@gmail.com": {
-      "password": "ifcy fmnj tevl fnyq",
-      "provider": "gmail.com",
-      "smtp_host": "smtp.gmail.com",
-      "smtp_port": 587,
-      "imap_host": "imap.gmail.com",
-      "imap_port": 993,
-      "verified": true,
-      "imap_ok": true
-    },
     "bagoxgun@gmail.com": {
       "password": "ztty tmzb dmrb bkor",
       "provider": "gmail.com",
