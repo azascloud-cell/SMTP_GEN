@@ -5,11 +5,12 @@ const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
+const QRCode = require('qrcode');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Sessions pool: { [chatId]: { sock, isConnected, authDir } }
+// Sessions pool: { [chatId]: { sock, isConnected, authDir, lastQR } }
 const sessions = {};
 
 // Session Auto-Persistence to Git to prevent session loss on restart
@@ -127,7 +128,8 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
     sessions[chatId] = {
         sock,
         isConnected: false,
-        authDir
+        authDir,
+        lastQR: null
     };
 
     sock.ev.on('creds.update', () => {
@@ -136,7 +138,12 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
     });
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            sessions[chatId].lastQR = qr;
+            console.log(`[Chat ${chatId}] QR code received (${qr.length} chars)`);
+        }
 
         if (connection === 'close') {
             sessions[chatId].isConnected = false;
@@ -276,6 +283,45 @@ app.get('/pair', async (req, res) => {
         return res.json({ success: true, code: code, phone: cleanPhone });
     } catch (err) {
         console.error(`[Chat ${chatId}] Error in /pair:`, err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/qr', async (req, res) => {
+    const chatId = req.query.chat_id || process.env.TELEGRAM_CHAT_ID;
+    if (!chatId) {
+        return res.status(400).json({ error: "Missing chat_id parameter" });
+    }
+
+    try {
+        let session = sessions[chatId];
+
+        if (session && session.sock && session.sock.authState && session.sock.authState.creds.registered) {
+            return res.status(400).json({ error: "WhatsApp session is already linked for this user." });
+        }
+
+        if (!session) {
+            session = await getOrCreateSocket(chatId);
+        }
+
+        let qr = session.lastQR;
+        if (!qr) {
+            for (let i = 0; i < 20; i++) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                qr = sessions[chatId] ? sessions[chatId].lastQR : null;
+                if (qr) break;
+            }
+        }
+
+        if (!qr) {
+            return res.status(503).json({ error: "QR code not yet available. Please try again in a few seconds." });
+        }
+
+        const qrPng = await QRCode.toBuffer(qr, { width: 400, margin: 2 });
+        res.setHeader('Content-Type', 'image/png');
+        return res.send(qrPng);
+    } catch (err) {
+        console.error(`[Chat ${chatId}] Error in /qr:`, err);
         return res.status(500).json({ error: err.message });
     }
 });
