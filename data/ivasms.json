@@ -2,9 +2,9 @@
   "credentials": {
     "email": "zarofyd@gmail.com",
     "password": "azaronigg123",
-    "login_url": "https://ivas.tempnum.qzz.io/login",
-    "base_url": "https://ivas.tempnum.qzz.io",
-    "sms_endpoint": "https://ivas.tempnum.qzz.io/portal/sms/received/getsms"
+    "login_url": "https://ivasms.com/login",
+    "base_url": "https://ivasms.com",
+    "sms_endpoint": "https://ivasms.com/portal/sms/received/getsms"
   },
   "combos": {},
   "assignments": {},
