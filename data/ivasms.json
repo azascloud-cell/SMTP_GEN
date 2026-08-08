@@ -1,0 +1,12 @@
+{
+  "credentials": {
+    "email": "zarofyd@gmail.com",
+    "password": "azaronigg123",
+    "login_url": "https://ivas.tempnum.qzz.io/login",
+    "base_url": "https://ivas.tempnum.qzz.io",
+    "sms_endpoint": "https://ivas.tempnum.qzz.io/portal/sms/received/getsms"
+  },
+  "combos": {},
+  "assignments": {},
+  "otp_logs": []
+}
