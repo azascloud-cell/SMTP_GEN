@@ -1,0 +1,40 @@
+name: Build Pterodactyl Package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'sc panel pterodactyl/**'
+      - '.github/workflows/build-pterodactyl.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build zip package
+        run: |
+          rm -rf /tmp/pterodactyl-package
+          mkdir -p /tmp/pterodactyl-package/data/numbers
+          cp -r bot /tmp/pterodactyl-package/
+          cp wa_checker.js package.json requirements.txt /tmp/pterodactyl-package/
+          cp -r hosting /tmp/pterodactyl-package/
+          cp README.md SETUP_CPANEL.md /tmp/pterodactyl-package/
+          cp -r data/numbers_index.json data/pending_fixes.json data/smtp_accounts.json data/smtp_daily_usage.json /tmp/pterodactyl-package/data/
+          cp -r 'sc panel pterodactyl/start.sh' 'sc panel pterodactyl/PTERODACTYL_SETUP.md' /tmp/pterodactyl-package/
+          cd /tmp/pterodactyl-package
+          zip -qr "$GITHUB_WORKSPACE/sc panel pterodactyl/sc panel pterodactyl.zip" .
+          unzip -tq "$GITHUB_WORKSPACE/sc panel pterodactyl/sc panel pterodactyl.zip"
+
+      - name: Commit package
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 'sc panel pterodactyl/sc panel pterodactyl.zip'
+          git diff --cached --quiet || git commit -m 'build: update Pterodactyl zip package'
+          git push
