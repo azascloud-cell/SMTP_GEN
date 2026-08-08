@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const express = require('express');
 const pino = require('pino');
 const https = require('https');
@@ -119,8 +119,7 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false,
-        browser: Browsers.macOS('Chrome')
+        printQRInTerminal: false
     });
 
     sessions[chatId] = {
@@ -138,15 +137,9 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
         const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
-            if (sessions[chatId]) {
-                sessions[chatId].isConnected = false;
-            }
+            sessions[chatId].isConnected = false;
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log(`[Chat ${chatId}] Connection closed due to`, lastDisconnect?.error, `, reconnecting:`, shouldReconnect);
-
-            // Clean up session reference from pool so next connection/request creates a new, active socket
-            delete sessions[chatId];
-
             if (shouldReconnect) {
                 setTimeout(() => {
                     getOrCreateSocket(chatId);
@@ -159,6 +152,7 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
                 } catch (e) {
                     console.error("Failed to delete auth dir:", e);
                 }
+                delete sessions[chatId];
                 sendTelegramMessage(chatId, "⚠️ *Koneksi WhatsApp Terputus!* Session Anda telah di-logout.");
                 debouncedSaveSession();
             }
