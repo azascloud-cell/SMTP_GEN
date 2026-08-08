@@ -145,16 +145,24 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
                     getOrCreateSocket(chatId);
                 }, 3000);
             } else {
-                // If logged out, delete the directory and remove session
-                console.log(`[Chat ${chatId}] Logged out. Cleaning up credentials...`);
-                try {
-                    fs.rmSync(authDir, { recursive: true, force: true });
-                } catch (e) {
-                    console.error("Failed to delete auth dir:", e);
+                const wasRegistered = sock.authState && sock.authState.creds && sock.authState.creds.registered;
+                if (wasRegistered) {
+                    // If logged out, delete the directory and remove session
+                    console.log(`[Chat ${chatId}] Logged out. Cleaning up credentials...`);
+                    try {
+                        fs.rmSync(authDir, { recursive: true, force: true });
+                    } catch (e) {
+                        console.error("Failed to delete auth dir:", e);
+                    }
+                    delete sessions[chatId];
+                    sendTelegramMessage(chatId, "⚠️ *Koneksi WhatsApp Terputus!* Session Anda telah di-logout.");
+                    debouncedSaveSession();
+                } else {
+                    console.log(`[Chat ${chatId}] Disconnected during pairing/unlinked state. Attempting to restart socket...`);
+                    setTimeout(() => {
+                        getOrCreateSocket(chatId);
+                    }, 3000);
                 }
-                delete sessions[chatId];
-                sendTelegramMessage(chatId, "⚠️ *Koneksi WhatsApp Terputus!* Session Anda telah di-logout.");
-                debouncedSaveSession();
             }
         } else if (connection === 'open') {
             sessions[chatId].isConnected = true;

@@ -249,7 +249,7 @@ def fmt_smtp_add_fail(r: dict) -> str:
     )
 
 
-def fmt_number_results(results: list[dict], total_in_file: int) -> str:
+def fmt_number_results(results: list[dict], total_in_file: int, chat_id: int = None) -> str:
     lines = [
         "📱 *Hasil Cek Nomor WhatsApp*",
         "━━━━━━━━━━━━━━━━━━━━",
@@ -262,7 +262,7 @@ def fmt_number_results(results: list[dict], total_in_file: int) -> str:
         lbl  = status_label(r["registered"])
         lines.append(f"{icon} `{r['phone']}` — {lbl}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    if not is_checker_connected():
+    if not is_checker_connected(chat_id):
         lines.append("⚠️ WA Checker belum terhubung — status tidak bisa dicek")
         lines.append("Tekan *Connect WA Checker* untuk konfigurasi")
     else:
@@ -843,7 +843,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     results = await asyncio.to_thread(check_numbers, chosen, chat_id)
 
-    text_out = fmt_number_results(results, len(numbers))
+    text_out = fmt_number_results(results, len(numbers), chat_id)
     kb       = build_number_buttons(results, chat_id)
     await msg.edit_text(text_out, parse_mode="Markdown", reply_markup=kb)
 
@@ -1508,7 +1508,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(info_msg, parse_mode="Markdown")
         chosen   = pick_random(numbers, 3)
         results  = await asyncio.to_thread(check_numbers, chosen, chat_id)
-        text_out = fmt_number_results(results, len(numbers))
+        text_out = fmt_number_results(results, len(numbers), chat_id)
         kb       = build_number_buttons(results, chat_id)
         await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=kb)
 
@@ -1540,7 +1540,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chosen   = pick_random(numbers, 3)
         await query.edit_message_text(f"🔍 Mengecek {len(chosen)} nomor dari {len(numbers)}...")
         results  = await asyncio.to_thread(check_numbers, chosen, chat_id)
-        text_out = fmt_number_results(results, len(numbers))
+        text_out = fmt_number_results(results, len(numbers), chat_id)
         kb       = build_number_buttons(results, chat_id)
         await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=kb)
 
