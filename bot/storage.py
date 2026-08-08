@@ -68,7 +68,7 @@ def load(path: Path) -> dict:
             try:
                 raw = base64.b64decode(body["content"]).decode("utf-8")
                 data = json.loads(raw)
-                # Cache ke disk
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(data, indent=2))
                 logger.debug(f"Loaded {path.name} from GitHub ({len(data)} entries)")
                 return data
@@ -90,6 +90,7 @@ def save(path: Path, data: dict):
     Jika GitHub tidak tersedia, hanya simpan lokal.
     """
     content = json.dumps(data, indent=2)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
 
     if not GH_PAT or not REPO:

@@ -86,26 +86,20 @@ jobs:
           GITHUB_RUN_ID:      ${{ github.run_id }}
           GITHUB_REPOSITORY:  ${{ github.repository }}
           GITHUB_SHA:         ${{ github.sha }}
-          # ── WA Checker URL (Local Baileys running on background) ─────────
           WA_CHECKER_URL:     "http://localhost:3000"
-          # ── GitHub PAT untuk auto-update ──────────────────────────────────
           GH_PAT:             ${{ secrets.GH_PAT }}
-          # ── MailerSend API untuk auto-generate/send SMTP ──────────────────
           MAILERSEND_API_KEY: ${{ secrets.MAILERSEND_API_KEY }}
           MAILERSEND_SENDER_EMAIL: ${{ secrets.MAILERSEND_SENDER_EMAIL }}
-          # ── cPanel via PHP Proxy API (InfinityFree) ───────────────────────
           CPANEL_API_URL:     ${{ secrets.CPANEL_API_URL }}
           CPANEL_API_KEY:     ${{ secrets.CPANEL_API_KEY }}
           CPANEL_DOMAIN:      ${{ secrets.CPANEL_DOMAIN }}
-          # ── cPanel UAPI langsung (hosting non-InfinityFree, opsional) ─────
           CPANEL_URL:         ${{ secrets.CPANEL_URL }}
           CPANEL_USER:        ${{ secrets.CPANEL_USER }}
           CPANEL_PASS:        ${{ secrets.CPANEL_PASS }}
         run: |
           echo "✅ Bot starting at $(date -u)"
           echo "📦 Commit: ${{ github.sha }}"
-          cd bot
-          python main.py
+          PYTHONPATH=bot python bot/main.py
 
       - name: 🔔 Notify if bot crashed
         if: failure()
