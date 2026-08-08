@@ -702,12 +702,17 @@ async def cmd_setivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = parts[1].strip()
     base_url = parts[2].strip() if len(parts) > 2 else None
 
-    from ivasms import update_credentials
+    from ivasms import update_credentials, check_ivasms_connection
     await asyncio.to_thread(update_credentials, email, password, base_url)
 
-    await update.message.reply_text(
-        "✅ *Kredensial iVasms Berhasil Disimpan!*\n"
-        "Bot akan mencoba masuk ke dashboard pada permintaan OTP berikutnya.",
+    msg = await update.message.reply_text("⏳ Memverifikasi kredensial ke iVasms...")
+    ok, status_msg = await asyncio.to_thread(check_ivasms_connection)
+
+    await msg.edit_text(
+        "⚙️ *Set Kredensial iVasms*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "✅ Kredensial iVasms berhasil disimpan!\n"
+        f"🔌 Hasil Test Koneksi: *{status_msg}*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🔐 Admin Panel", callback_data="ivasms_admin")
@@ -1656,8 +1661,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = c_info["name"]
 
         await query.edit_message_text(f"⏳ Membuka detail nomor {phone}...")
-        results = await asyncio.to_thread(check_numbers, [phone], chat_id)
-        status_reg = results[0]["registered"]
+        try:
+            results = await asyncio.to_thread(check_numbers, [phone], chat_id)
+            if not results:
+                raise ValueError("Hasil pengecekan kosong.")
+            status_reg = results[0]["registered"]
+        except Exception as e:
+            logger.warning(f"Error checking number {phone}: {e}")
+            detail_msg = (
+                f"❌ *Gagal Cek Status WA Nomor Ini*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📞 *Nomor:* `{phone}`\n"
+                f"🌍 *Negara:* {flag} {name} (+{c_info['code']})\n\n"
+                f"⚠️ *Penyebab:*\n"
+                f"Koneksi ke WA Checker bermasalah, atau session Anda belum terhubung.\n\n"
+                f"Silakan hubungkan/pair WhatsApp Anda terlebih dahulu."
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Hubungkan WA", callback_data="connect_wa_info")],
+                [InlineKeyboardButton("🔙 Kembali ke Hasil", callback_data="num_reroll")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+            ])
+            await query.edit_message_text(detail_msg, parse_mode="Markdown", reply_markup=kb)
+            return
 
         if status_reg is False:
             status_wa_str = "[ *🟢 Fresh* | 🔴 Terdaftar (Linked) | ⚪ Terdaftar (Unlinked) ]"
