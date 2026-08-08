@@ -13,6 +13,7 @@ Bot Telegram yang **generate SMTP credentials otomatis** dari berbagai provider 
 | 🔄 Keep-Alive | Restart otomatis setiap 5 jam agar tetap 24/7 |
 | 🔔 Notif Restart | Notifikasi ke Telegram saat bot aktif kembali |
 | 📋 Inline Keyboard | UI interaktif tanpa perlu ketik command |
+| 🔗 QR Pairing | Tautkan WhatsApp via QR code scan |
 
 ---
 
@@ -85,6 +86,8 @@ Buka repo → **Settings** → **Secrets and variables** → **Actions** → **N
 | `/start` | Menu utama dengan tombol interaktif |
 | `/generate` | Generate SMTP credentials langsung |
 | `/status` | Cek status bot & provider aktif |
+| `/pair` | Tautkan WA Checker via pairing code |
+| `/qr` | Tautkan WA Checker via QR code |
 | `/help` | Panduan cara pakai |
 
 ---
