@@ -109,13 +109,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📱 Cek Nomor WA / Gacha", callback_data="wa_menu")],
         [InlineKeyboardButton("🔧 Banding Ban WhatsApp", callback_data="fix_menu")],
         [InlineKeyboardButton("🤖 Auto Gen SMTP", callback_data="autogen_menu")],
-        # iVasms Temp Numbers
-        rows = []
-        rows.append([InlineKeyboardButton("🌍 iVasms Temp Numbers (OTP)",       callback_data="ivasms_main")])
-        rows.append([InlineKeyboardButton("📊 Status Bot", callback_data="status_info")])
-        rows.append([InlineKeyboardButton(checker_label, callback_data="wa_connect")])
-        rows.append([InlineKeyboardButton("❓ Bantuan", callback_data="help_info")])
-        keyboard = rows
+        [InlineKeyboardButton("🌍 iVasms Temp Numbers (OTP)", callback_data="ivasms_main")],
+        [InlineKeyboardButton("📊 Status Bot", callback_data="status_info")],
+        [InlineKeyboardButton(checker_label, callback_data="wa_connect")],
+        [InlineKeyboardButton("❓ Bantuan", callback_data="help_info")],
+    ]
 
     await update.message.reply_text(
         f"👋 *Halo, {name}!*\n"
