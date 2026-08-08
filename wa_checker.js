@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const express = require('express');
 const pino = require('pino');
 const https = require('https');
@@ -119,7 +119,9 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false
+        browser: Browsers.ubuntu('Chrome'),
+        printQRInTerminal: false,
+        markOnlineOnConnect: false
     });
 
     sessions[chatId] = {
@@ -179,13 +181,23 @@ async function getOrCreateSocket(chatId, pairingNumber = null) {
     return sessions[chatId];
 }
 
+async function waitForSocketStartup(sock, timeoutMs = 15000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+        if (sock.authState.creds.registered || sock.ws?.isOpen) return;
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+}
+
 async function triggerPairing(sock, pairingNumber, chatId) {
     if (!sock.authState.creds.registered) {
         console.log(`[Chat ${chatId}] Attempting pairing with: ${pairingNumber}`);
         setTimeout(async () => {
             try {
                 if (sock.authState.creds.registered) return;
+                await waitForSocketStartup(sock);
                 const cleanPhone = pairingNumber.replace(/[^\d]/g, '');
+                if (!cleanPhone) throw new Error('Invalid phone number');
                 const code = await sock.requestPairingCode(cleanPhone);
                 console.log(`[Chat ${chatId}] PAIRING CODE GENERATED: ${code}`);
                 sendTelegramMessage(
@@ -245,15 +257,15 @@ app.get('/pair', async (req, res) => {
 
         let code;
         let lastError;
-        // Retry requesting pairing code up to 5 times (total of ~10 seconds) with 2s interval
-        for (let attempt = 1; attempt <= 5; attempt++) {
+        // Retry while the Baileys transport finishes connecting.
+        for (let attempt = 1; attempt <= 8; attempt++) {
             try {
                 code = await session.sock.requestPairingCode(cleanPhone);
                 break;
             } catch (err) {
                 lastError = err;
-                console.log(`[Chat ${chatId}] Attempt ${attempt} to request pairing code failed: ${err.message}. Retrying in 2 seconds...`);
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                console.log(`[Chat ${chatId}] Attempt ${attempt} to request pairing code failed: ${err.message}. Retrying in 3 seconds...`);
+                await waitForSocketStartup(session.sock, 3000);
             }
         }
 

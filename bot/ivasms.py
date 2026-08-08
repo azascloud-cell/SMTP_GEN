@@ -92,9 +92,10 @@ def check_ivasms_connection() -> tuple[bool, str]:
     test_url = f"{base_url.rstrip('/')}/portal/sms/received"
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }
-        resp = _session.get(test_url, headers=headers, timeout=15, allow_redirects=True)
+        resp = _session.get(test_url, headers=headers, timeout=20, allow_redirects=True)
         if resp.status_code == 200 and "login" not in resp.url.lower() and "sign in" not in resp.text.lower():
             soup = BeautifulSoup(resp.text, "html.parser")
             csrf_meta = soup.find("meta", {"name": "csrf-token"})
@@ -113,15 +114,16 @@ def check_ivasms_connection() -> tuple[bool, str]:
 def load_ivasms_data() -> dict:
     """Load data iVasms dari persistent storage."""
     data = storage_load(DATA_PATH)
-    # Default structures
-    if "credentials" not in data:
-        data["credentials"] = {
-            "email": os.environ.get("IVASMS_EMAIL", ""),
-            "password": os.environ.get("IVASMS_PASSWORD", ""),
-            "login_url": "https://ivas.tempnum.qzz.io/login",
-            "base_url": "https://ivas.tempnum.qzz.io",
-            "sms_endpoint": "https://ivas.tempnum.qzz.io/portal/sms/received/getsms",
-        }
+    default_credentials = {
+        "email": os.environ.get("IVASMS_EMAIL", ""),
+        "password": os.environ.get("IVASMS_PASSWORD", ""),
+        "login_url": "https://ivas.tempnum.qzz.io/login",
+        "base_url": "https://ivas.tempnum.qzz.io",
+        "sms_endpoint": "https://ivas.tempnum.qzz.io/portal/sms/received/getsms",
+    }
+    credentials = data.setdefault("credentials", {})
+    for key, value in default_credentials.items():
+        credentials.setdefault(key, value)
     if "combos" not in data:
         data["combos"] = {}  # { "62": ["+628...", ...] }
     if "assignments" not in data:
@@ -163,7 +165,6 @@ def login_to_ivasms() -> bool:
 
     email = creds.get("email")
     password = creds.get("password")
-    login_url = creds.get("login_url")
 
     if not email or not password:
         logger.warning("Email atau password iVasms belum diset.")
@@ -176,25 +177,32 @@ def login_to_ivasms() -> bool:
         _session = requests.Session()
 
         # 1. Ambil halaman login untuk mengambil CSRF token
-        r1 = _session.get(login_url, timeout=20)
+        login_url = urljoin(f"{creds.get('base_url', '').rstrip('/')}/", "login")
+        r1 = _session.get(login_url, headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }, timeout=20)
         r1.raise_for_status()
 
         soup = BeautifulSoup(r1.text, "html.parser")
         token_input = soup.find("input", {"name": "_token"})
-        csrf_token = token_input["value"] if token_input else None
+        token_meta = soup.find("meta", {"name": "csrf-token"})
+        csrf_token = token_input.get("value") if token_input else (token_meta.get("content") if token_meta else None)
 
         # 2. Kirim POST login
-        payload = {
-            "email": email,
-            "password": password
-        }
+        payload = {"email": email, "password": password}
         if csrf_token:
             payload["_token"] = csrf_token
 
-        r2 = _session.post(login_url, data=payload, timeout=20)
+        r2 = _session.post(login_url, data=payload, headers={
+            "Referer": login_url,
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }, timeout=20, allow_redirects=True)
 
-        # Jika tidak diredirect kembali ke login page, tandanya sukses
-        if "login" not in r2.url.lower():
+        # Berhasil jika diarahkan keluar dari halaman login dan tidak menampilkan form login.
+        login_form = BeautifulSoup(r2.text, "html.parser").find("form", action=re.compile(r"login", re.I))
+        if r2.ok and "login" not in r2.url.rstrip("/").lower() and not login_form:
             logger.info("Login iVasms Dashboard sukses! ✅")
 
             # Ambil CSRF token baru dari dashboard page setelah login
