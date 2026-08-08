@@ -487,7 +487,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📂 `/listsmtp` — Lihat SMTP\n"
         "🗑 `/delsmtp email` — Hapus SMTP\n"
         "🎲 Upload .txt + pilih Gacha\n"
-        "🔗 `/pair +phone` — Tautkan WA Checker\n"
+        "🔗 `/pair +phone` — Tautkan WA Checker (Pairing Code)\n"
+        "📸 `/qr` — Tautkan WA Checker (QR Code)\n"
         "🔧 `/fix +phone` — Banding ban WA\n"
         "🤖 `/autogen` — Auto gen SMTP\n"
         "🌍 `/ivasms` — iVasms Temp Numbers\n"
@@ -777,6 +778,68 @@ async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ *Gagal:* {error_msg}", parse_mode="Markdown")
     except Exception as e:  # noqa: BLE001
         await msg.edit_text(f"❌ *Error:* Gagal menghubungi WA Checker. Pastikan WA Checker terhubung.\nDetail: {e}", parse_mode="Markdown")
+
+
+# ── WA QR Pairing ─────────────────────────────────────────────────────────────
+
+def _fetch_qr_code(chat_id: int) -> bytes:
+    import urllib.request
+    url = f"{WA_CHECKER_URL}/qr?chat_id={chat_id}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+
+async def cmd_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tautkan WA Checker via QR Code. Format: /qr"""
+    chat_id = update.effective_chat.id
+
+    if not WA_CHECKER_URL:
+        await update.message.reply_text(
+            "❌ *WA Checker belum dikonfigurasi.*\n"
+            "Hubungi admin untuk setup WA Checker terlebih dahulu.",
+            parse_mode="Markdown",
+        )
+        return
+
+    msg = await update.message.reply_text("⏳ Membuat QR code dari WA Checker...")
+
+    try:
+        qr_bytes = await asyncio.to_thread(_fetch_qr_code, chat_id)
+
+        if not qr_bytes:
+            await msg.edit_text(
+                "❌ *Gagal membuat QR code.*\n"
+                "WA Checker tidak dapat membuat QR code saat ini.\n"
+                "Coba lagi dalam beberapa detik.",
+                parse_mode="Markdown",
+            )
+            return
+
+        await msg.delete()
+
+        await update.message.reply_photo(
+            photo=qr_bytes,
+            caption=(
+                "🔗 *WhatsApp Pairing via QR Code*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "Scan QR code di atas dengan WhatsApp Anda:\n"
+                "1. Buka WhatsApp\n"
+                "2. Ketuk menu (⋮) → Perangkat Tertaut\n"
+                "3. Ketuk Tautkan Perangkat\n"
+                "4. Scan QR code ini\n\n"
+                "⏳ QR code kedaluwarsa dalam ~60 detik.\n"
+                "Jika kedaluwarsa, ketik `/qr` untuk membuat baru."
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:  # noqa: BLE001
+        await msg.edit_text(
+            f"❌ *Gagal menghubungi WA Checker.*\n"
+            f"Pastikan WA Checker sedang berjalan.\n"
+            f"Detail: {e}",
+            parse_mode="Markdown",
+        )
 
 
 # ── IMAP Monitor Loop ──────────────────────────────────────────────────────────
@@ -1233,9 +1296,59 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔗 *Tautkan WA Checker*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"⚠️ WA Checker belum terhubung.\n\n"
-                f"Gunakan command:\n"
-                f"`/pair +628xxxxxxxx`\n\n"
-                f"Untuk menautkan WhatsApp Anda dengan WA Checker via pairing code.",
+                f"Pilih metode pairing:\n\n"
+                f"📱 *Metode 1: Pairing Code*\n"
+                f"`/pair +628xxxxxxxx`\n"
+                f"Masukkan nomor telepon untuk dapat kode pairing.\n\n"
+                f"📸 *Metode 2: QR Code*\n"
+                f"`/qr`\n"
+                f"Scan QR code dengan WhatsApp Anda.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📸 Pair via QR Code", callback_data="qr_pair")],
+                    [InlineKeyboardButton("🔙 Kembali", callback_data="start")],
+                ]),
+            )
+
+    elif data == "qr_pair":
+        chat_id = query.message.chat_id
+        if not WA_CHECKER_URL:
+            await query.edit_message_text(
+                "❌ WA Checker belum dikonfigurasi.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali", callback_data="start")]]),
+            )
+            return
+
+        await query.edit_message_text("⏳ Membuat QR code dari WA Checker...")
+        try:
+            qr_bytes = await asyncio.to_thread(_fetch_qr_code, chat_id)
+            if not qr_bytes:
+                await query.edit_message_text(
+                    "❌ Gagal membuat QR code. Coba lagi dalam beberapa detik.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali", callback_data="start")]]),
+                )
+                return
+
+            await query.message.reply_photo(
+                photo=qr_bytes,
+                caption=(
+                    "🔗 *WhatsApp Pairing via QR Code*\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "Scan QR code di atas dengan WhatsApp Anda:\n"
+                    "1. Buka WhatsApp\n"
+                    "2. Ketuk menu (⋮) → Perangkat Tertaut\n"
+                    "3. Ketuk Tautkan Perangkat\n"
+                    "4. Scan QR code ini\n\n"
+                    "⏳ QR code kedaluwarsa dalam ~60 detik.\n"
+                    "Jika kedaluwarsa, ketik `/qr` untuk membuat baru."
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception as e:  # noqa: BLE001
+            await query.edit_message_text(
+                f"❌ Gagal menghubungi WA Checker.\nDetail: {e}",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali", callback_data="start")]]),
             )
@@ -1548,6 +1661,7 @@ def main():
     app.add_handler(CommandHandler("autogen",     cmd_autogen))
     app.add_handler(CommandHandler("update",      cmd_update))
     app.add_handler(CommandHandler("pair",        cmd_pair))
+    app.add_handler(CommandHandler("qr",         cmd_qr))
     app.add_handler(CommandHandler("search",      cmd_search))
     app.add_handler(CommandHandler("ivasms",      cmd_ivasms))
     app.add_handler(CommandHandler("addcombo",    cmd_addcombo))
@@ -1567,6 +1681,7 @@ def main():
             BotCommand("fix",         "🔧 Banding ban WhatsApp"),
             BotCommand("autogen",     "🤖 Auto generate SMTP via backend"),
             BotCommand("pair",        "🔗 Tautkan WhatsApp Checker via Pairing Code"),
+            BotCommand("qr",         "📸 Tautkan WhatsApp Checker via QR Code"),
             BotCommand("search",      "🔍 Cari nomor berdasarkan prefix"),
             BotCommand("ivasms",      "🌍 iVasms Temp Numbers & OTP"),
             BotCommand("setivasms",   "⚙️ Set kredensial admin iVasms"),
