@@ -1,0 +1,15 @@
+{
+  "name": "sc-panel-pterodactyl",
+  "version": "1.0.0",
+  "description": "SMTP Generator Bot — WhatsApp Checker (Node.js only) for Pterodactyl Panel",
+  "main": "wa_checker.js",
+  "scripts": {
+    "start": "node wa_checker.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.5.0",
+    "express": "^4.19.2",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^9.0.0"
+  }
+}
