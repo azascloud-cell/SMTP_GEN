@@ -41,16 +41,48 @@ _is_logged_in = False
 _csrf_token = None
 _cookies = None
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Cookie helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_base_url_from_cookies(cookie_items: list) -> str | None:
+    """Deteksi base URL dari domain yang terdapat dalam cookie export."""
+    for item in cookie_items:
+        if isinstance(item, dict):
+            domain = item.get("domain", "")
+            if domain:
+                domain = domain.lstrip(".")
+                if domain.startswith("www."):
+                    domain = domain[4:]
+                if domain:
+                    return f"https://{domain}"
+    return None
+
+
+def _build_cookie_header(cookies: dict) -> str:
+    """Bangun raw Cookie header dari dict cookies."""
+    return "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+
+def _apply_cookies_to_session(cookies: dict):
+    """Set cookies sebagai raw header di session (bypass domain matching)."""
+    global _session
+    _session.headers.update({"Cookie": _build_cookie_header(cookies)})
+
+
 def update_cookies(cookie_str: str) -> dict:
     """Mengupdate dan menyimpan cookies dari user input (string raw atau JSON)."""
     global _session, _cookies, _is_logged_in
     cookies = {}
+    cookie_items = []
     try:
         # Coba parse sebagai JSON (misalnya export dari chrome extension)
         data = json.loads(cookie_str)
         if isinstance(data, dict):
             cookies = data
+            cookie_items = [data]
         elif isinstance(data, list):
+            cookie_items = data
             for item in data:
                 if isinstance(item, dict) and "name" in item and "value" in item:
                     cookies[item["name"]] = item["value"]
@@ -64,14 +96,25 @@ def update_cookies(cookie_str: str) -> dict:
 
     if cookies:
         _session.cookies.clear()
-        for k, v in cookies.items():
-            _session.cookies.set(k, v)
+        _apply_cookies_to_session(cookies)
         data = load_ivasms_data()
         data["cookies"] = cookies
+
+        # Auto-detect base URL dari domain cookie jika tersedia
+        detected_base = _detect_base_url_from_cookies(cookie_items)
+        if detected_base:
+            existing_base = data.get("credentials", {}).get("base_url", "")
+            if not existing_base or existing_base != detected_base:
+                data.setdefault("credentials", {})["base_url"] = detected_base
+                data["credentials"]["login_url"] = f"{detected_base}/login"
+                data["credentials"]["sms_endpoint"] = f"{detected_base}/portal/sms/received/getsms"
+                logger.info(f"iVasms base_url auto-detected dari cookie: {detected_base}")
+
         save_ivasms_data(data)
         _cookies = cookies
         _is_logged_in = False  # Reset login state to force re-verification
     return cookies
+
 
 def check_ivasms_connection() -> tuple[bool, str]:
     """Mengecek apakah status koneksi aktif menggunakan cookie yang tersimpan."""
@@ -85,22 +128,27 @@ def check_ivasms_connection() -> tuple[bool, str]:
     stored_cookies = data.get("cookies")
     if stored_cookies:
         _session.cookies.clear()
-        for k, v in stored_cookies.items():
-            _session.cookies.set(k, v)
+        _apply_cookies_to_session(stored_cookies)
         _cookies = stored_cookies
 
     test_url = f"{base_url.rstrip('/')}/portal/sms/received"
     try:
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
         resp = _session.get(test_url, headers=headers, timeout=20, allow_redirects=True)
+        # Sukses jika tidak di-redirect ke halaman login
         if resp.status_code == 200 and "login" not in resp.url.lower() and "sign in" not in resp.text.lower():
             soup = BeautifulSoup(resp.text, "html.parser")
             csrf_meta = soup.find("meta", {"name": "csrf-token"})
             if csrf_meta:
                 _csrf_token = csrf_meta.get("content")
+            # Juga cari CSRF token dari input hidden
+            if not _csrf_token:
+                token_input = soup.find("input", {"name": "_token"})
+                if token_input:
+                    _csrf_token = token_input.get("value")
             _is_logged_in = True
             return True, "Koneksi sukses! Terhubung via Cookie. ✅"
         else:
@@ -110,6 +158,7 @@ def check_ivasms_connection() -> tuple[bool, str]:
             return False, "Koneksi gagal. Cookie/Kredensial tidak valid."
     except Exception as e:
         return False, f"Koneksi gagal: {e}"
+
 
 def load_ivasms_data() -> dict:
     """Load data iVasms dari persistent storage."""
@@ -132,13 +181,16 @@ def load_ivasms_data() -> dict:
         data["otp_logs"] = []
     return data
 
+
 def save_ivasms_data(data: dict):
     """Save data iVasms ke persistent storage."""
     storage_save(DATA_PATH, data)
 
+
 def get_credentials() -> dict:
     data = load_ivasms_data()
     return data["credentials"]
+
 
 def update_credentials(email: str, password: str, base_url: str = None) -> dict:
     data = load_ivasms_data()
@@ -180,7 +232,7 @@ def login_to_ivasms() -> bool:
         login_url = urljoin(f"{creds.get('base_url', '').rstrip('/')}/", "login")
         r1 = _session.get(login_url, headers={
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }, timeout=20)
         r1.raise_for_status()
 
@@ -197,7 +249,7 @@ def login_to_ivasms() -> bool:
         r2 = _session.post(login_url, data=payload, headers={
             "Referer": login_url,
             "X-Requested-With": "XMLHttpRequest",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }, timeout=20, allow_redirects=True)
 
         # Berhasil jika diarahkan keluar dari halaman login dan tidak menampilkan form login.
@@ -231,6 +283,7 @@ def login_to_ivasms() -> bool:
         _is_logged_in = False
         return False
 
+
 def fetch_ivasms_messages() -> list[dict]:
     """Membaca pesan masuk dari iVasms untuk rentang waktu terakhir."""
     global _is_logged_in, _csrf_token, _session
@@ -247,7 +300,8 @@ def fetch_ivasms_messages() -> list[dict]:
     try:
         headers = {
             "Referer": f"{base_url}/portal/sms/received",
-            "X-Requested-With": "XMLHttpRequest"
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
 
         # Default load messages for today
@@ -351,6 +405,7 @@ def extract_otp(message: str) -> str:
 
     return "N/A"
 
+
 def detect_service(message: str) -> str:
     """Mendeteksi nama aplikasi/layanan dari isi SMS."""
     msg_lower = message.lower()
@@ -394,6 +449,7 @@ def add_combo(country_code: str, numbers: list[str]) -> bool:
     save_ivasms_data(data)
     return True
 
+
 def delete_combo(country_code: str) -> bool:
     """Menghapus total combo untuk negara tertentu."""
     data = load_ivasms_data()
@@ -403,10 +459,12 @@ def delete_combo(country_code: str) -> bool:
         return True
     return False
 
+
 def list_combos() -> dict:
     """List semua combo."""
     data = load_ivasms_data()
     return data["combos"]
+
 
 def assign_number(chat_id: int, country_code: str) -> dict | None:
     """Mengalokasikan satu nomor acak dari combo negara yang belum terpakai."""
@@ -440,6 +498,7 @@ def assign_number(chat_id: int, country_code: str) -> dict | None:
     save_ivasms_data(data)
     return data["assignments"][str(chat_id)]
 
+
 def release_number(chat_id: int):
     """Membatalkan penugasan nomor untuk user tertentu."""
     data = load_ivasms_data()
@@ -448,10 +507,12 @@ def release_number(chat_id: int):
         del data["assignments"][chat_id_str]
         save_ivasms_data(data)
 
+
 def get_assignment(chat_id: int) -> dict | None:
     """Mengambil detail penugasan nomor user."""
     data = load_ivasms_data()
     return data["assignments"].get(str(chat_id))
+
 
 def get_user_by_number(phone: str) -> int | None:
     """Mencari chat_id user berdasarkan nomor yang ditugaskan."""
@@ -460,6 +521,7 @@ def get_user_by_number(phone: str) -> int | None:
         if val["phone"] == phone:
             return int(cid_str)
     return None
+
 
 def log_otp(phone: str, otp: str, text: str, chat_id: int | None = None):
     """Mencatat OTP log di persistent storage."""
