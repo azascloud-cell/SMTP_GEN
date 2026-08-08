@@ -715,6 +715,45 @@ async def cmd_setivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+    if not is_admin:
+        await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
+        return
+
+    cookie_data = " ".join(context.args).strip() if context.args else ""
+    if not cookie_data:
+        await update.message.reply_text(
+            "🔑 *Set Cookie Session iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/setcookie <cookie_string_atau_json>`\n\n"
+            "Contoh raw cookie:\n"
+            "`/setcookie XSRF-TOKEN=...; ivasms_session=...`\n\n"
+            "Contoh JSON cookie (dari chrome extension):\n"
+            "`/setcookie [{\"name\": \"ivasms_session\", \"value\": \"...\"}]`",
+            parse_mode="Markdown"
+        )
+        return
+
+    from ivasms import update_cookies, check_ivasms_connection
+    await asyncio.to_thread(update_cookies, cookie_data)
+
+    msg = await update.message.reply_text("⏳ Memverifikasi cookie session ke iVasms...")
+    ok, status_msg = await asyncio.to_thread(check_ivasms_connection)
+
+    await msg.edit_text(
+        f"🔑 *Set Cookie Session*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💾 Cookie berhasil disimpan!\n"
+        f"🔌 Hasil Test Koneksi: *{status_msg}*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔐 Admin Panel", callback_data="ivasms_admin")
+        ]])
+    )
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❓ *Panduan Bot*\n"
@@ -2297,18 +2336,77 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("⚠️ Akses ditolak. Hanya untuk Admin.", show_alert=True)
             return
 
+        from ivasms import get_credentials, load_ivasms_data, check_ivasms_connection
+        creds = get_credentials()
+        email = creds.get("email") or "Belum di-set"
+        base_url = creds.get("base_url") or "Belum di-set"
+
+        ivasms_data = load_ivasms_data()
+        has_cookies = "Ada ✅" if ivasms_data.get("cookies") else "Tidak Ada ❌"
+
+        # Cek status koneksi secara interaktif (non-blocking)
+        ok, status_msg = await asyncio.to_thread(check_ivasms_connection)
+        conn_indicator = "🟢 Terhubung" if ok else f"🔴 Terputus ({status_msg})"
+
         text = (
-            "🔐 *Admin Panel iVasms*\n"
+            "🔐 *Admin Panel iVasms & 2-Step Login*\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Kelola kredensial panel dan stock combo nomor iVasms."
+            "💡 *PROSES LOGIN 2 TAHAP (2x Login):*\n"
+            "1️⃣ *Step 1: Set Kredensial* (Email, Password, Base URL)\n"
+            "    Gunakan command: `/setivasms email|password|base_url`\n"
+            "2️⃣ *Step 2: Set Cookie Session* (Membypass Cloudflare/Proteksi)\n"
+            "    Gunakan command: `/setcookie cookie_data`\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📧 *Email:* `{email}`\n"
+            f"🌐 *Base URL:* `{base_url}`\n"
+            f"🔑 *Cookie Session:* *{has_cookies}*\n"
+            f"🔌 *Status Koneksi:* *{conn_indicator}*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan gunakan tombol di bawah untuk mengelola koneksi:"
         )
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔌 Cek Status Koneksi", callback_data="ivasms_check_conn")],
+            [InlineKeyboardButton("⚙️ Set Kredensial (Step 1)", callback_data="ivasms_creds_prompt")],
+            [InlineKeyboardButton("🔑 Set Cookie Session (Step 2)", callback_data="ivasms_setcookie_prompt")],
+            [InlineKeyboardButton("🗑️ Hapus Cookie Session", callback_data="ivasms_delcookie")],
             [InlineKeyboardButton("📥 Tambah Combo Nomor", callback_data="ivasms_addcombo_prompt")],
             [InlineKeyboardButton("🗑️ Hapus Combo Negara", callback_data="ivasms_delcombo_prompt")],
-            [InlineKeyboardButton("⚙️ Set Kredensial Panel", callback_data="ivasms_creds_prompt")],
             [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
         ])
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_check_conn":
+        from ivasms import check_ivasms_connection
+        # Tampilkan toast alert ke user
+        ok, status_msg = await asyncio.to_thread(check_ivasms_connection)
+        await query.answer(status_msg, show_alert=True)
+        # Refresh panel admin
+        query.data = "ivasms_admin"
+        await button_handler(update, context)
+
+    elif data == "ivasms_setcookie_prompt":
+        await query.edit_message_text(
+            "🔑 *Set Cookie Session iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan kirimkan cookie session Anda di chat menggunakan format:\n"
+            "`/setcookie <cookie_string_atau_json>`\n\n"
+            "💡 Anda bisa mendapatkan cookie dengan masuk ke iVasms di Chrome, lalu copy dari DevTools -> Network -> Request Headers -> Cookie, atau gunakan extension Cookie Exporter.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Batal", callback_data="ivasms_admin")
+            ]])
+        )
+
+    elif data == "ivasms_delcookie":
+        from ivasms import load_ivasms_data, save_ivasms_data
+        ivasms_data = load_ivasms_data()
+        if "cookies" in ivasms_data:
+            del ivasms_data["cookies"]
+            save_ivasms_data(ivasms_data)
+        await query.answer("✅ Cookie session berhasil dihapus!", show_alert=True)
+        # Refresh panel admin
+        query.data = "ivasms_admin"
+        await button_handler(update, context)
 
     elif data == "ivasms_addcombo_prompt":
         await query.edit_message_text(
@@ -2437,6 +2535,7 @@ def main():
     app.add_handler(CommandHandler("ivasms",      cmd_ivasms))
     app.add_handler(CommandHandler("addcombo",    cmd_addcombo))
     app.add_handler(CommandHandler("setivasms",   cmd_setivasms))
+    app.add_handler(CommandHandler("setcookie",   cmd_setcookie))
     app.add_handler(CallbackQueryHandler(button_handler))
     # Handler untuk upload file .txt
     app.add_handler(MessageHandler(filters.Document.MimeType("text/plain"), handle_document))
@@ -2454,6 +2553,8 @@ def main():
             BotCommand("pair",        "🔗 Tautkan WhatsApp Checker via Pairing Code"),
             BotCommand("search",      "🔍 Cari nomor berdasarkan prefix"),
             BotCommand("ivasms",      "🌍 iVasms Temp Numbers & OTP"),
+            BotCommand("setivasms",   "⚙️ Set kredensial admin iVasms"),
+            BotCommand("setcookie",   "🔑 Set cookie session admin iVasms"),
             BotCommand("update",      "🔄 Cek & update bot dari GitHub"),
             BotCommand("status",      "📊 Status bot"),
             BotCommand("help",        "❓ Bantuan"),
