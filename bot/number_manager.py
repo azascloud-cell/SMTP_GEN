@@ -25,7 +25,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 WA_CHECKER_URL = os.environ.get("WA_CHECKER_URL", "").rstrip("/")
-TIMEOUT = 30
+TIMEOUT = 10
 
 
 # ─────────────────────────────────────────────────────────────────────────────
