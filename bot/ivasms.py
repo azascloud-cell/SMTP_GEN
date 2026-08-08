@@ -12,7 +12,7 @@ import time
 import random
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -46,14 +46,13 @@ _cookies = None
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _detect_base_url_from_cookies(cookie_items: list) -> str | None:
-    """Deteksi base URL dari domain yang terdapat dalam cookie export."""
+    """Deteksi base URL dari domain yang terdapat dalam cookie export.
+    Preserves www. prefix karena cookie binding di Laravel bersifat domain-specific."""
     for item in cookie_items:
         if isinstance(item, dict):
             domain = item.get("domain", "")
             if domain:
                 domain = domain.lstrip(".")
-                if domain.startswith("www."):
-                    domain = domain[4:]
                 if domain:
                     return f"https://{domain}"
     return None
@@ -68,6 +67,10 @@ def _apply_cookies_to_session(cookies: dict):
     """Set cookies sebagai raw header di session (bypass domain matching)."""
     global _session
     _session.headers.update({"Cookie": _build_cookie_header(cookies)})
+    # Jika ada XSRF-TOKEN cookie, set juga sebagai X-XSRF-TOKEN header (Laravel convention)
+    xsrf = cookies.get("XSRF-TOKEN")
+    if xsrf:
+        _session.headers.update({"X-XSRF-TOKEN": unquote(xsrf)})
 
 
 def update_cookies(cookie_str: str) -> dict:
@@ -76,7 +79,6 @@ def update_cookies(cookie_str: str) -> dict:
     cookies = {}
     cookie_items = []
     try:
-        # Coba parse sebagai JSON (misalnya export dari chrome extension)
         data = json.loads(cookie_str)
         if isinstance(data, dict):
             cookies = data
@@ -87,7 +89,6 @@ def update_cookies(cookie_str: str) -> dict:
                 if isinstance(item, dict) and "name" in item and "value" in item:
                     cookies[item["name"]] = item["value"]
     except Exception:
-        # Parse standard Cookie header format
         for item in cookie_str.split(";"):
             item = item.strip()
             if "=" in item:
@@ -112,7 +113,7 @@ def update_cookies(cookie_str: str) -> dict:
 
         save_ivasms_data(data)
         _cookies = cookies
-        _is_logged_in = False  # Reset login state to force re-verification
+        _is_logged_in = False
     return cookies
 
 
@@ -144,7 +145,6 @@ def check_ivasms_connection() -> tuple[bool, str]:
             csrf_meta = soup.find("meta", {"name": "csrf-token"})
             if csrf_meta:
                 _csrf_token = csrf_meta.get("content")
-            # Juga cari CSRF token dari input hidden
             if not _csrf_token:
                 token_input = soup.find("input", {"name": "_token"})
                 if token_input:
@@ -174,9 +174,9 @@ def load_ivasms_data() -> dict:
     for key, value in default_credentials.items():
         credentials.setdefault(key, value)
     if "combos" not in data:
-        data["combos"] = {}  # { "62": ["+628...", ...] }
+        data["combos"] = {}
     if "assignments" not in data:
-        data["assignments"] = {}  # { "chat_id": { "phone": "+628...", "country_code": "62", "assigned_at": 1234 } }
+        data["assignments"] = {}
     if "otp_logs" not in data:
         data["otp_logs"] = []
     return data
@@ -203,7 +203,7 @@ def update_credentials(email: str, password: str, base_url: str = None) -> dict:
         data["credentials"]["sms_endpoint"] = f"{base_url}/portal/sms/received/getsms"
     save_ivasms_data(data)
     global _is_logged_in
-    _is_logged_in = False # Force relogin on next action
+    _is_logged_in = False
     return data["credentials"]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,10 +225,8 @@ def login_to_ivasms() -> bool:
     logger.info(f"Mencoba login ke iVasms Dashboard: {email}")
 
     try:
-        # Reset session
         _session = requests.Session()
 
-        # 1. Ambil halaman login untuk mengambil CSRF token
         login_url = urljoin(f"{creds.get('base_url', '').rstrip('/')}/", "login")
         r1 = _session.get(login_url, headers={
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -241,7 +239,6 @@ def login_to_ivasms() -> bool:
         token_meta = soup.find("meta", {"name": "csrf-token"})
         csrf_token = token_input.get("value") if token_input else (token_meta.get("content") if token_meta else None)
 
-        # 2. Kirim POST login
         payload = {"email": email, "password": password}
         if csrf_token:
             payload["_token"] = csrf_token
@@ -252,23 +249,20 @@ def login_to_ivasms() -> bool:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }, timeout=20, allow_redirects=True)
 
-        # Berhasil jika diarahkan keluar dari halaman login dan tidak menampilkan form login.
         login_form = BeautifulSoup(r2.text, "html.parser").find("form", action=re.compile(r"login", re.I))
         if r2.ok and "login" not in r2.url.rstrip("/").lower() and not login_form:
             logger.info("Login iVasms Dashboard sukses! ✅")
 
-            # Ambil CSRF token baru dari dashboard page setelah login
             soup2 = BeautifulSoup(r2.text, "html.parser")
             csrf_meta = soup2.find("meta", {"name": "csrf-token"})
             if csrf_meta:
                 _csrf_token = csrf_meta.get("content")
             else:
-                _csrf_token = csrf_token  # fallback
+                _csrf_token = csrf_token
 
             _is_logged_in = True
             _cookies = _session.cookies.get_dict()
 
-            # Simpan cookie ke persistent storage
             data = load_ivasms_data()
             data["cookies"] = _cookies
             save_ivasms_data(data)
@@ -304,7 +298,6 @@ def fetch_ivasms_messages() -> list[dict]:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
 
-        # Default load messages for today
         now = datetime.now(timezone.utc)
         start_date = now.strftime("%m/%d/%Y")
         end_date = now.strftime("%m/%d/%Y")
@@ -337,7 +330,6 @@ def fetch_ivasms_messages() -> list[dict]:
         sms_details_url = urljoin(base_url, "portal/sms/received/getsms/number/sms")
 
         for group_id in group_ids:
-            # 1. Ambil list nomor untuk group ini
             num_payload = {
                 "start": start_date,
                 "end": end_date,
@@ -350,9 +342,7 @@ def fetch_ivasms_messages() -> list[dict]:
             number_divs = num_soup.select("div[onclick*='getDetialsNumber']")
             phone_numbers = [div.text.strip() for div in number_divs]
 
-            # 2. Ambil list SMS untuk tiap nomor
             for phone in phone_numbers:
-                # Normalisasi nomor telepon
                 phone_clean = "+" + re.sub(r"[^\d]", "", phone)
 
                 sms_payload = {
@@ -384,7 +374,7 @@ def fetch_ivasms_messages() -> list[dict]:
 
     except Exception as e:
         logger.error(f"Error fetch_ivasms_messages: {e}")
-        _is_logged_in = False  # force relogin next time
+        _is_logged_in = False
         return []
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -393,12 +383,10 @@ def fetch_ivasms_messages() -> list[dict]:
 
 def extract_otp(message: str) -> str:
     """Mengekstrak kode angka OTP dari isi SMS."""
-    # Cari pola angka 4 s.d. 8 digit
     match = re.search(r"\b(\d{4,8})\b", message)
     if match:
         return match.group(1)
 
-    # Cari pola bertanda hubung/spasi (e.g., 123-456)
     match2 = re.search(r"\b(\d{3})[- ](\d{3})\b", message)
     if match2:
         return f"{match2.group(1)}{match2.group(2)}"
@@ -470,26 +458,21 @@ def assign_number(chat_id: int, country_code: str) -> dict | None:
     """Mengalokasikan satu nomor acak dari combo negara yang belum terpakai."""
     data = load_ivasms_data()
 
-    # 1. Pastikan combo ada & tidak kosong
     combo_numbers = data["combos"].get(country_code, [])
     if not combo_numbers:
         return None
 
-    # 2. Cari nomor yang belum teralokasi saat ini
     currently_assigned = {v["phone"] for v in data["assignments"].values()}
     available = [n for n in combo_numbers if n not in currently_assigned]
 
     if not available:
-        # Jika habis, recycle/allow reuse (opsional) atau kembalikan None
         return None
 
     selected = random.choice(available)
 
-    # 3. Alokasikan ke user
-    # Batalkan penugasan sebelumnya jika ada
     release_number(chat_id)
 
-    data = load_ivasms_data() # reload setelah release
+    data = load_ivasms_data()
     data["assignments"][str(chat_id)] = {
         "phone": selected,
         "country_code": country_code,
@@ -534,7 +517,6 @@ def log_otp(phone: str, otp: str, text: str, chat_id: int | None = None):
         "timestamp": int(time.time())
     }
     data["otp_logs"].append(log_entry)
-    # Batasi log agar tidak terlalu membengkak (misal max 500 logs)
     if len(data["otp_logs"]) > 500:
         data["otp_logs"] = data["otp_logs"][-200:]
     save_ivasms_data(data)
