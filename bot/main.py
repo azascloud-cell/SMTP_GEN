@@ -1,13 +1,10 @@
 import asyncio
-import io
 import logging
 import os
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-import openpyxl
-from typing import Optional, Tuple, List, Dict
 
 from github_updater import (
     check_for_update,
@@ -27,8 +24,6 @@ from number_manager import (
     status_emoji,
     status_label,
     search_by_prefix,
-    _normalize,
-    check_wa_registered,
 )
 from smtp_auto_generator import (
     MAILERSEND_API_KEY,
@@ -55,54 +50,45 @@ from whatsapp_fix import (
     send_appeal_email,
 )
 
-# ── Logging ───────────────────────────────────────────────────────────��[...]
+# ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────[...]
-BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+# ── Config ────────────────────────────────────────────────────────────────────
+BOT_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 RUN_ID     = os.environ.get("GITHUB_RUN_ID", "local")
-
-def is_user_admin(chat_id) -> bool:
-    chat_id_str = str(chat_id).strip()
-    if not chat_id_str:
-        return False
-    if ADMIN_CHAT and chat_id_str == str(ADMIN_CHAT).strip():
-        return True
-    admin_ids = [aid.strip() for aid in os.environ.get("ADMIN_IDS", "").split(",") if aid.strip()]
-    return chat_id_str in admin_ids
 REPO       = os.environ.get("GITHUB_REPOSITORY", "SMTP_GEN")
 
 generator = SMTPGenerator()
 manager   = SMTPManager()
 
 BANDING_TEMPLATES_RAW = {
-    "id": "Halo Tim Dukungan WhatsApp, Nomor saya ({phone}) terblokir secara tidak sengaja. Saya selalu mematuhi Ketentuan Layanan WhatsApp dan tidak pernah mengirim spam. Nomor ini sangat penting[...]",
-    "en": "Hello WhatsApp Support Team, My phone number ({phone}) was banned by mistake. I strictly follow WhatsApp Terms of Service and have not sent any spam or violation content. This is my pri[...]",
-    "ar": "مرحبًا فريق دعم WhatsApp، تم حظر رقم هاتفي ({phone}) عن طريق الخطأ. أنا ألتزم تمامًا بشروط خدمة WhatsApp ولم أقم بإ�[...]",
-    "ru": "Здравствуйте, служба поддержки WhatsApp! Мой номер телефона ({phone}) был заблокирован по ошибке. Я строго со�[...]",
-    "fr": "Bonjour l'équipe Support WhatsApp, Mon numéro de téléphone ({phone}) a été bloqué par erreur. Je respecte strictement les Conditions d'utilisation de WhatsApp et n'ai envoyé auc[...]",
+    "id": "Halo Tim Dukungan WhatsApp, Nomor saya ({phone}) terblokir secara tidak sengaja. Saya selalu mematuhi Ketentuan Layanan WhatsApp dan tidak pernah mengirim spam. Nomor ini sangat penting untuk komunikasi harian saya. Mohon peninjauan ulang dan aktifkan kembali akun saya. Terima kasih.",
+    "en": "Hello WhatsApp Support Team, My phone number ({phone}) was banned by mistake. I strictly follow WhatsApp Terms of Service and have not sent any spam or violation content. This is my primary number for daily communication. Please review and unban my account. Thank you.",
+    "ar": "مرحبًا فريق دعم WhatsApp، تم حظر رقم هاتفي ({phone}) عن طريق الخطأ. أنا ألتزم تمامًا بشروط خدمة WhatsApp ولم أقم بإرسال أي رسائل مزعجة. هذا الرقم ضروري جدًا لتواصلي اليومي. يرجى إعادة النظر وإلغاء حظر حسابي. شكرًا لكم.",
+    "ru": "Здравствуйте, служба поддержки WhatsApp! Мой номер телефона ({phone}) был заблокирован по ошибке. Я строго соблюдаю Условия использования WhatsApp и не рассылал спам. Этот номер жизненно важен для моего ежедневного общения. Пожалуйста, проверьте и разблокируйте мой аккаунт. Спасибо.",
+    "fr": "Bonjour l'équipe Support WhatsApp, Mon numéro de téléphone ({phone}) a été bloqué par erreur. Je respecte strictement les Conditions d'utilisation de WhatsApp et n'ai envoyé aucun spam. Ce numéro est essentiel pour ma communication quotidienne. Merci de bien vouloir vérifier et débloquer mon compte. Cordialement."
 }
 
 
 # ── Simpan daftar nomor per user sementara (in-memory) ───────────────────────
 # { chat_id: ["+628...", ...] }
-_user_numbers: Dict[int, List[str]] = {}
+_user_numbers: dict[int, list[str]] = {}
 
 # ── Simpan nama file terakhir yang digunakan per user ─────────────────────────
 # Dipakai oleh num_reroll agar bisa reload dari GitHub setelah restart
 # { chat_id: "filename.txt" }
-_last_file_by_chat: Dict[int, str] = {}
+_last_file_by_chat: dict[int, str] = {}
 
 # ── Index terakhir SMTP yang digunakan untuk rotasi round-robin ───────────────
 _last_smtp_index: int = 0
 
 
-# ── Helpers ───────────────────────────────────────────────────────────�[...]
+# ── Helpers ───────────────────────────────────────────────────────────────────
 import random
 
 TESTIMONIAL_CHANNEL_ID = os.environ.get("TESTIMONIAL_CHANNEL_ID", "")
@@ -111,7 +97,7 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def get_random_banner() -> Optional[Path]:
+def get_random_banner() -> Path | None:
     # Try finding banner files matching file_*.png under attached_assets
     banners = list(Path("/app/attached_assets").glob("file_*.png"))
     if not banners:
@@ -121,7 +107,7 @@ def get_random_banner() -> Optional[Path]:
     return None
 
 
-def get_qris_path() -> Optional[Path]:
+def get_qris_path() -> Path | None:
     paths = [
         Path("/app/attached_assets/qris.jpeg"),
         Path("attached_assets/qris.jpeg"),
@@ -160,15 +146,14 @@ async def post_to_testimonial_channel(bot, text: str):
         logger.error(f"Failed to post testimonial to channel {channel_id}: {e}")
 
 
-async def main_menu_keyboard(chat_id: int):
+def main_menu_keyboard(chat_id: int):
     rows = []
     # Nomor Management
     rows.append([
         InlineKeyboardButton("📱 Cek Nomor WA", callback_data="num_info"),
         InlineKeyboardButton("🔍 Cari Prefix", callback_data="search_prompt")
     ])
-    checker_connected = await asyncio.to_thread(is_checker_connected, chat_id)
-    checker_label = "🔗 WA Checker: Terhubung ✅" if checker_connected else "🔗 Connect WA Checker"
+    checker_label = "🔗 WA Checker: Terhubung ✅" if is_checker_connected(chat_id) else "🔗 Connect WA Checker"
     rows.append([InlineKeyboardButton(checker_label, callback_data="connect_wa_info")])
     # Email temp
     rows.append([InlineKeyboardButton("📧 Email Temp (Receive Only)",      callback_data="gen")])
@@ -202,7 +187,7 @@ def provider_keyboard():
     return InlineKeyboardMarkup(rows)
 
 
-# ── Formatters ──────────────────────────────────────────────────────────�[...]
+# ── Formatters ────────────────────────────────────────────────────────────────
 def fmt_tempmail(result: dict) -> str:
     if not result["success"]:
         return f"❌ *Gagal generate:* {result.get('error', 'Unknown')}"
@@ -259,13 +244,12 @@ def fmt_smtp_add_fail(r: dict) -> str:
         f"🌐 Host: `{r.get('tried_host', '-')}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"💡 {r.get('hint', 'Pastikan email & password benar')}\n\n"
-
         f"Gmail → pakai App Password:\n"
         f"myaccount.google.com/apppasswords"
     )
 
 
-def fmt_number_results(results: List[Dict], total_in_file: int) -> str:
+def fmt_number_results(results: list[dict], total_in_file: int) -> str:
     lines = [
         "📱 *Hasil Cek Nomor WhatsApp*",
         "━━━━━━━━━━━━━━━━━━━━",
@@ -288,7 +272,7 @@ def fmt_number_results(results: List[Dict], total_in_file: int) -> str:
     return "\n".join(lines)
 
 
-def build_number_buttons(results: List[Dict], chat_id: int) -> InlineKeyboardMarkup:
+def build_number_buttons(results: list[dict], chat_id: int) -> InlineKeyboardMarkup:
     """
     Buat keyboard:
     - Tiap nomor punya tombol copy → callback "copy_NUM"
@@ -310,12 +294,10 @@ def build_number_buttons(results: List[Dict], chat_id: int) -> InlineKeyboardMar
     return InlineKeyboardMarkup(rows)
 
 
-# ── Command Handlers ────────────────────────────────────────────────────────�[...]
+# ── Command Handlers ──────────────────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    checker_connected = await asyncio.to_thread(is_checker_connected, chat_id)
-    checker_status = "✅ WA Checker terhubung" if checker_connected else "⚠️ WA Checker belum diset"
-    reply_markup_kb = await main_menu_keyboard(chat_id)
+    checker_status = "✅ WA Checker terhubung" if is_checker_connected(chat_id) else "⚠️ WA Checker belum diset"
     await update.message.reply_text(
         f"🤖 *Bot Management Nomor & SMTP*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -326,7 +308,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔧 *WA Fix* — banding ban WhatsApp\n\n"
         f"Pilih menu di bawah:",
         parse_mode="Markdown",
-        reply_markup=reply_markup_kb,
+        reply_markup=main_menu_keyboard(chat_id),
     )
 
 
@@ -381,4 +363,2109 @@ async def cmd_addsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
-# (rest of file unchanged)
+async def cmd_listsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    accounts = manager.list_accounts(chat_id)
+    if not accounts:
+        text = "📭 *Belum ada akun SMTP manual.*\n\nTambah: `/addsmtp email|password`"
+    else:
+        lines = ["📂 *Akun SMTP Manual*\n━━━━━━━━━━━━━━━━━━━━"]
+        for i, a in enumerate(accounts, 1):
+            ok = "✅" if a["verified"] else "⚠️"
+            lines.append(f"{i}. {ok} `{a['email']}`")
+        lines.append(f"\nTotal: {len(accounts)} akun")
+        text = "\n".join(lines)
+    await update.message.reply_text(text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Tambah", callback_data="add_smtp_info")],
+            [InlineKeyboardButton("🔙 Menu",   callback_data="back_main")],
+        ]))
+
+
+
+
+async def cmd_delsmtp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    key = " ".join(context.args).strip() if context.args else ""
+    if not key:
+        # Tampilkan semua akun agar user tahu key yang benar
+        accounts = manager.list_accounts(chat_id)
+        if not accounts:
+            await update.message.reply_text(
+                "📭 Belum ada akun SMTP.\n\nFormat: `/delsmtp key`",
+                parse_mode="Markdown",
+            )
+            return
+        lines = ["🗑 *Hapus Akun SMTP*\n━━━━━━━━━━━━━━━━━━━━\nKirim key yang ingin dihapus:\n"]
+        for a in accounts:
+            lines.append(f"• `{a['email']}`")
+        lines.append("\nContoh:\n`/delsmtp email@gmail.com`\n`/delsmtp mailtrap:usernamenya`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+    result = manager.remove_account(key, chat_id)
+    if result["success"]:
+        await update.message.reply_text(
+            f"✅ `{key}` berhasil dihapus.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📂 Lihat Akun", callback_data="list_smtp"),
+            ]]),
+        )
+    else:
+        # Coba fuzzy match — tampilkan daftar akun yang ada
+        accounts = manager.list_accounts(chat_id)
+        lines = [f"❌ *Key tidak ditemukan:* `{key}`\n\n📋 *Akun yang tersedia:*"]
+        for a in accounts:
+            lines.append(f"• `{a['email']}`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    checker_ok = is_checker_connected(chat_id)
+    ch_status  = f"✅ Terhubung (`{WA_CHECKER_URL}`)" if checker_ok else "⚠️ Belum setup"
+    await update.message.reply_text(
+        f"📊 *Status Bot*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🟢 Bot: Online\n"
+        f"⏰ Waktu: {now_utc()}\n"
+        f"🆔 Run ID: `{RUN_ID}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 WA Checker: {ch_status}\n"
+        f"📧 Provider Temp: {len(generator.list_providers())}\n"
+        f"📂 Akun Manual: {manager.count(chat_id)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_donasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    qris_path = get_qris_path()
+
+    text = (
+        "💖 *Dukung Pengembangan Bot* 💖\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Halo! Jika bot ini membantu Anda dalam mengelola SMTP dan memulihkan nomor WhatsApp yang dibanned, Anda dapat memberikan dukungan/donasi kepada developer agar server tetap berjalan aktif.\n\n"
+        "Silakan scan QRIS di atas menggunakan e-wallet (Dana, OVO, GoPay, LinkAja) atau Mobile Banking Anda.\n\n"
+        "Terima kasih banyak atas kebaikan dan dukungan Anda! 🙏✨"
+    )
+
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+
+    try:
+        if qris_path and qris_path.exists():
+            with open(qris_path, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    caption=text,
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+                # Jika dipicu dari callback query, hapus pesan sebelumnya dengan aman
+                if update.callback_query:
+                    try:
+                        await update.callback_query.message.delete()
+                    except Exception:
+                        pass
+        else:
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    text + "\n\n*(QRIS Image tidak ditemukan, silakan hubungi developer)*",
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+            else:
+                await update.message.reply_text(
+                    text + "\n\n*(QRIS Image tidak ditemukan, silakan hubungi developer)*",
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+    except Exception as e:
+        logger.error(f"Failed to send QRIS photo: {e}")
+        if update.callback_query:
+            try:
+                await update.callback_query.edit_message_text(
+                    text,
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=kb
+                )
+        else:
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    prefix = " ".join(context.args).strip() if context.args else ""
+    if not prefix:
+        await update.message.reply_text(
+            "🔍 *Cari Nomor Berdasarkan Prefix*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/search <prefix>`\n"
+            "Contoh: `/search 628` atau `/search +228`\n\n"
+            "Bot akan mencari semua nomor di file .txt yang Anda upload yang dimulai dengan prefix tersebut.",
+            parse_mode="Markdown",
+        )
+        return
+
+    msg = await update.message.reply_text("🔍 Sedang mencari nomor...")
+    results = await asyncio.to_thread(search_by_prefix, prefix, chat_id)
+
+    if not results:
+        await msg.edit_text(
+            f"❌ Tidak ditemukan nomor yang berawalan dengan prefix `{prefix}`.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")
+            ]])
+        )
+        return
+
+    # Check status WA for these matched numbers
+    # We can check them using check_numbers or we can check only first few to speed things up
+    # Let's cap results to 20 numbers to keep keyboard size reasonable
+    limit = 20
+    matched_subset = results[:limit]
+    phones = [r["phone"] for r in matched_subset]
+
+    # Perform checker lookup in background
+    checked_results = await asyncio.to_thread(check_numbers, phones, chat_id)
+
+    lines = [
+        f"🔍 *Hasil Pencarian Prefix:* `{prefix}`",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Total kecocokan: {len(results)} nomor",
+    ]
+    if len(results) > limit:
+        lines.append(f"_(Hanya menampilkan {limit} hasil pertama)_")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    # Build keyboard
+    rows = []
+    for r in checked_results:
+        phone = r["phone"]
+        icon = status_emoji(r["registered"])
+        rows.append([InlineKeyboardButton(f"{icon} 📋 {phone}", callback_data=f"copy_num_{phone}")])
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━\n💡 Klik tombol nomor di bawah untuk melihat detail Gacha & Template Banding.")
+    rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+
+    await msg.edit_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def cmd_ivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    # Taruh import di dalam agar aman dari dependency loop
+    from ivasms import get_assignment, list_combos
+    from number_manager import get_country_info, COUNTRY_DATA
+
+    assign = get_assignment(chat_id)
+
+    if assign:
+        phone = assign["phone"]
+        c_info = get_country_info(phone)
+        flag = c_info["flag"]
+        name = c_info["name"]
+        assigned_dt = datetime.fromtimestamp(assign["assigned_at"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        text = (
+            f"🌍 *iVasms Temp Number & OTP*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 *Nomor Aktif:* `{phone}`\n"
+            f"🌍 *Negara:* {flag} {name}\n"
+            f"📅 *Ditugaskan:* `{assigned_dt}`\n\n"
+            f"⏳ *Status:* Menunggu OTP... Bot akan secara otomatis mengirimkan pesan baru ke sini saat SMS diterima di panel iVasms."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Batalkan / Lepas Nomor", callback_data="ivasms_release")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+        ])
+    else:
+        combos = list_combos()
+        lines = [
+            "🌍 *iVasms Temp Number & OTP*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "Silakan pilih negara di bawah ini untuk mendapatkan nomor sementara baru:",
+        ]
+
+        rows = []
+        row = []
+        for code, num_list in combos.items():
+            if not num_list:
+                continue
+            c_data = COUNTRY_DATA.get(code, {"flag": "🌍", "name": f"Region (+{code})"})
+            btn_text = f"{c_data['flag']} {c_data['name']} ({len(num_list)})"
+            row.append(InlineKeyboardButton(btn_text, callback_data=f"ivasms_get_{code}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+
+        # Admin button
+        is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+        if is_admin:
+            rows.append([InlineKeyboardButton("🔐 Admin Panel iVasms", callback_data="ivasms_admin")])
+
+        rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+        kb = InlineKeyboardMarkup(rows)
+        text = "\n".join(lines)
+
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cmd_addcombo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+    if not is_admin:
+        await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "⚠️ *Format /addcombo Salah!*\n"
+            "Format: `/addcombo <kode_negara> <nomor1,nomor2,...>`\n"
+            "Atau upload file `.txt` nomor terlebih dahulu, lalu ketik `/addcombo <kode_negara>` untuk mengimpor dari file tersebut.",
+            parse_mode="Markdown"
+        )
+        return
+
+    code = args[0].strip()
+
+    # Check if there is numbers argument
+    if len(args) > 1:
+        numbers_raw = " ".join(args[1:]).split(",")
+        numbers = [n.strip() for n in numbers_raw if n.strip()]
+    else:
+        # Import from user's last uploaded file
+        numbers = _user_numbers.get(chat_id, [])
+        if not numbers:
+            await update.message.reply_text("❌ Tidak ada file nomor terbaru yang diupload. Silakan upload file `.txt` terlebih dahulu.")
+            return
+
+    from ivasms import add_combo
+    success = await asyncio.to_thread(add_combo, code, numbers)
+    if success:
+        await update.message.reply_text(
+            f"✅ *Sukses Menambahkan Combo iVasms!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌍 Negara: `{code}`\n"
+            f"🔢 Ditambahkan: `{len(numbers)}` nomor\n\n"
+            f"Nomor siap dialokasikan oleh user!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌍 Menu iVasms", callback_data="ivasms_main")
+            ]])
+        )
+    else:
+        await update.message.reply_text("❌ Gagal menambahkan combo. Pastikan nomor valid.")
+
+
+async def cmd_setivasms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+    if not is_admin:
+        await update.message.reply_text("⚠️ Akses ditolak. Hanya untuk Admin.")
+        return
+
+    args_raw = " ".join(context.args).strip() if context.args else ""
+    if "|" not in args_raw:
+        await update.message.reply_text(
+            "⚙️ *Set Kredensial iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/setivasms email|password|base_url`\n\n"
+            "Contoh:\n"
+            "`/setivasms admin@example.com|securepass|https://ivas.tempnum.qzz.io`",
+            parse_mode="Markdown"
+        )
+        return
+
+    parts = args_raw.split("|")
+    if len(parts) < 2:
+        await update.message.reply_text("⚠️ Format salah. Minimal sediakan email dan password dipisah dengan `|`.")
+        return
+
+    email = parts[0].strip()
+    password = parts[1].strip()
+    base_url = parts[2].strip() if len(parts) > 2 else None
+
+    from ivasms import update_credentials
+    await asyncio.to_thread(update_credentials, email, password, base_url)
+
+    await update.message.reply_text(
+        "✅ *Kredensial iVasms Berhasil Disimpan!*\n"
+        "Bot akan mencoba masuk ke dashboard pada permintaan OTP berikutnya.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔐 Admin Panel", callback_data="ivasms_admin")
+        ]])
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❓ *Panduan Bot*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📱 *Cek Nomor WA*\n"
+        "Upload file `.txt` (satu nomor per baris)\n"
+        "Bot pilih 3 nomor acak & cek status WA\n"
+        "🟢 Hijau = fresh, 🔴 Merah = terdaftar WA\n\n"
+        "📧 *Email Temp* (Inbox Terintegrasi)\n"
+        "Langsung generate & cek inbox langsung di dalam bot!\n\n"
+        "➕ *SMTP Manual* (Gmail/Yahoo)\n"
+        "`/addsmtp email|app_password`\n\n"
+        "🔧 *WhatsApp Fix*\n"
+        "`/fix +628xxxxxxxx`\n"
+        "Kirim email banding ke WhatsApp support\n\n"
+        "📋 *Commands:*\n"
+        "/start — Menu utama\n"
+        "/generate — Email temp\n"
+        "/addsmtp — Tambah SMTP Gmail/Yahoo\n"
+        "/listsmtp — Lihat akun SMTP\n"
+        "/delsmtp — Hapus akun SMTP\n"
+        "/fix — Banding ban WhatsApp\n"
+        "/status — Status bot",
+        parse_mode="Markdown",
+    )
+
+
+# ── Number Management Document Handler ────────────────────────────────────────
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tangani upload file .txt untuk cek nomor WA."""
+    doc = update.message.document
+    if not doc:
+        return
+
+    # Hanya proses file .txt
+    fname = doc.file_name or ""
+    if not fname.lower().endswith(".txt"):
+        await update.message.reply_text(
+            "⚠️ Hanya file *.txt* yang didukung untuk cek nomor.\n"
+            "Format: satu nomor per baris.",
+            parse_mode="Markdown",
+        )
+        return
+
+    msg = await update.message.reply_text(
+        f"📄 Memproses *{fname}*...",
+        parse_mode="Markdown",
+    )
+
+    try:
+        tg_file  = await doc.get_file()
+        content  = await tg_file.download_as_bytearray()
+        text     = content.decode("utf-8", errors="replace")
+    except Exception as e:  # noqa: BLE001
+        await msg.edit_text(f"❌ Gagal baca file: {e}")
+        return
+
+    numbers = parse_numbers_from_text(text)
+    if not numbers:
+        await msg.edit_text(
+            f"❌ Tidak ada nomor valid di file `{fname}`\n\n"
+            f"Pastikan format: satu nomor per baris.",
+            parse_mode="Markdown",
+        )
+        return
+
+    chat_id = update.effective_chat.id
+    _user_numbers[chat_id] = numbers
+
+    # Simpan file ke GitHub storage (non-blocking, background)
+    safe_fname = fname.replace("_", "\\_").replace("*", "\\*")
+    await msg.edit_text(
+        f"💾 Menyimpan *{safe_fname}* ({len(numbers)} nomor)...",
+        parse_mode="Markdown",
+    )
+    sanitized_fname = re.sub(r"[^\w\-.]", "_", fname)
+    if not sanitized_fname.lower().endswith(".txt"):
+        sanitized_fname += ".txt"
+    sanitized_fname = sanitized_fname[:80]
+    _last_file_by_chat[chat_id] = sanitized_fname
+    asyncio.create_task(asyncio.to_thread(save_file, fname, text, chat_id, len(numbers)))
+
+    # Pilih 3 acak & cek WA
+    chosen  = pick_random(numbers, 3)
+    await msg.edit_text(
+        f"🔍 Mengecek {len(chosen)} nomor dari {len(numbers)} di file...",
+    )
+    results = await asyncio.to_thread(check_numbers, chosen, chat_id)
+
+    text_out = fmt_number_results(results, len(numbers))
+    kb       = build_number_buttons(results, chat_id)
+    await msg.edit_text(text_out, parse_mode="Markdown", reply_markup=kb)
+
+
+# ── WhatsApp Fix Command ───────────────────────────────────────────────────────
+async def cmd_autogen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Auto-generate SMTP/API via backend (Mail.tm atau MailerSend)."""
+    chat_id = update.effective_chat.id
+    arg = " ".join(context.args).strip().lower() if context.args else "auto"
+    msg = await update.message.reply_text(
+        f"⏳ *Auto-generate SMTP...*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Provider: `{arg}`\n"
+        f"Mohon tunggu...",
+        parse_mode="Markdown",
+    )
+    result = await asyncio.to_thread(auto_gen_smtp, arg)
+    if not result["success"]:
+        await msg.edit_text(
+            f"❌ *Generate SMTP Gagal*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ {result.get('error', 'Unknown error')}\n\n"
+            f"💡 Coba provider lain: /autogen mailtm atau mailersend",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Menu", callback_data="back_main")
+            ]]),
+        )
+        return
+    save_result = await asyncio.to_thread(manager.add_auto_generated, result, chat_id)
+    if not save_result["success"]:
+        await msg.edit_text(
+            f"❌ *Gagal simpan akun SMTP*\n{save_result.get('error', '')}",
+            parse_mode="Markdown",
+        )
+        return
+    key = save_result.get("email", result.get("key", "-"))
+    await msg.edit_text(
+        f"✅ *SMTP Auto-Generate Berhasil!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔖 Provider : `{result.get('provider', '-')}`\n"
+        f"👤 Key/User : `{key}`\n"
+        f"🔑 Password : `{result.get('password', '-')}`\n"
+        f"📤 SMTP     : `{result.get('smtp_host')}:{result.get('smtp_port')}`\n"
+        f"📥 IMAP     : `{result.get('imap_host')}:{result.get('imap_port')}`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 {result.get('note', '')}\n\n"
+        f"💾 Tersimpan otomatis & siap digunakan!",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📂 Lihat Akun SMTP", callback_data="list_smtp")],
+            [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
+        ]),
+    )
+
+
+async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = " ".join(context.args).strip() if context.args else ""
+
+    if not phone:
+        await update.message.reply_text(
+            "🔧 *WhatsApp Fix — Banding Ban*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Format: `/fix +628xxxxxxxx`\n\n"
+            "Contoh:\n"
+            "`/fix +6281234567890`\n"
+            "`/fix +249114757586`\n\n"
+            "📌 Bot akan:\n"
+            "1️⃣ Kirim email banding ke WhatsApp Support\n"
+            "2️⃣ Monitor inbox IMAP untuk balasan\n"
+            "3️⃣ Notifikasi kamu otomatis saat ada balasan\n\n"
+            "💡 Pastikan ada akun SMTP manual dulu: `/addsmtp`\n"
+            "⚠️ Catatan: Akun auto-generated dari temporary email (seperti Mail.tm) tidak diizinkan mengirim email ke luar domain oleh provider, silakan gunakan SMTP manual (Gmail/Yahoo/cPanel) untuk kirim banding.",
+            parse_mode="Markdown",
+        )
+        return
+
+    phone = phone.strip()
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    chat_id = update.effective_chat.id
+    global _last_smtp_index
+    accounts = manager.list_accounts(chat_id)
+    # Filter out auto generated emails because they can't send external email
+    verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
+    if not verified:
+        await update.message.reply_text(
+            "❌ *Tidak ada akun SMTP yang aktif!*\n\n"
+            "Tambah dulu dengan:\n"
+            "`/addsmtp email@gmail.com|app_password`\n\n"
+            "📌 Gmail App Password:\n"
+            "myaccount.google.com/apppasswords\n\n"
+            "⚠️ Catatan: Akun SMTP otomatis (seperti Mail.tm) tidak bisa dipakai kirim email banding.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Rotasi/alternating SMTP accounts round-robin
+    idx = _last_smtp_index % len(verified)
+    smtp_email = verified[idx]["email"]
+    _last_smtp_index = (idx + 1) % len(verified)
+
+    smtp_full  = manager.get_account(smtp_email, chat_id)
+    if not smtp_full:
+        await update.message.reply_text("❌ Gagal ambil data akun SMTP.", parse_mode="Markdown")
+        return
+
+    msg = await update.message.reply_text(
+        f"📤 *Mengirim email banding...*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Nomor: `{phone}`\n"
+        f"📧 SMTP: `{smtp_email}`\n"
+        f"🎯 Ke: `support@support.whatsapp.com`",
+        parse_mode="Markdown",
+    )
+
+    sent_at = time.time()
+    result  = await asyncio.to_thread(send_appeal_email, smtp_full, phone)
+
+    if not result["success"]:
+        await msg.edit_text(
+            f"❌ *Gagal Kirim Email Banding*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor: `{phone}`\n"
+            f"⚠️ Error: {result.get('error', 'Unknown')}\n\n"
+            f"💡 Cek App Password atau coba akun SMTP lain.",
+            parse_mode="Markdown",
+        )
+        return
+
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    user_info = f"@{user.username}" if user and user.username else (f"{user.first_name}" if user else "User")
+    add_pending(chat_id, phone, smtp_email, sent_at, user_info)
+
+    await msg.edit_text(
+        f"📬 *EMAIL BANDING TERKIRIM!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 Nomor : `{phone}`\n"
+        f"📧 SMTP  : `{smtp_email}`\n"
+        f"✅ Status : Banding berhasil terkirim!\n\n"
+        f"🤖 *INFO*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Bot akan monitor inbox secara otomatis.\n"
+        f"Kamu akan dinotifikasi jika ada balasan dari WhatsApp.",
+        parse_mode="Markdown",
+    )
+
+    # Post to Testimonial Channel
+    testi_msg = (
+        f"🚀 *NOTIF BANDING TERKIRIM* 🚀\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 *Nomor:* `{phone}`\n"
+        f"👤 *User:* {user_info}\n"
+        f"📧 *SMTP:* `{smtp_email}`\n"
+        f"✅ *Status:* Email banding sukses dikirim ke WhatsApp Support!\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+    await post_to_testimonial_channel(context.bot, testi_msg)
+
+
+def _fetch_pairing_code(phone: str, chat_id: int) -> dict:
+    import json
+    import urllib.parse
+    import urllib.request
+    encoded_phone = urllib.parse.quote(phone)
+    url = f"{WA_CHECKER_URL}/pair?phone={encoded_phone}&chat_id={chat_id}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tautkan WA Checker via Pairing Code. Format: /pair +phone"""
+    phone = " ".join(context.args).strip() if context.args else ""
+    if not phone:
+        await update.message.reply_text(
+            "🔗 *WhatsApp Pairing*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Format: `/pair +628xxxxxxxx`\n\n"
+            "Silakan masukkan nomor telepon Anda beserta kode negara untuk meminta pairing code dari WA Checker.",
+            parse_mode="Markdown",
+        )
+        return
+
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    chat_id = update.effective_chat.id
+    msg = await update.message.reply_text("⏳ Meminta pairing code dari WA Checker...")
+
+    try:
+        resp_data = await asyncio.to_thread(_fetch_pairing_code, phone, chat_id)
+
+        if resp_data.get("success"):
+            code = resp_data.get("code")
+            clean_phone = resp_data.get("phone")
+            await msg.edit_text(
+                f"🔗 *WhatsApp Pairing Code:*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🔑 Code  : `{code}`\n"
+                f"📱 Nomor : `{clean_phone}`\n\n"
+                f"Silakan buka WhatsApp Anda -> perangkat tertaut -> tautkan perangkat -> tautkan dengan nomor telepon, lalu masukkan kode di atas.",
+                parse_mode="Markdown",
+            )
+        else:
+            error_msg = resp_data.get("error", "Gagal meminta pairing code.")
+            await msg.edit_text(f"❌ *Gagal:* {error_msg}", parse_mode="Markdown")
+    except Exception as e:  # noqa: BLE001
+        await msg.edit_text(f"❌ *Error:* Gagal menghubungi WA Checker. Pastikan WA Checker terhubung.\nDetail: {e}", parse_mode="Markdown")
+
+
+async def imap_monitor_loop(bot: Bot):
+    logger.info("IMAP monitor loop dimulai...")
+    while True:
+        try:
+            pending = get_all_pending()
+            for key, item in list(pending.items()):
+                if item.get("notified"):
+                    continue
+
+                smtp_full = manager.get_account(item["smtp_email"], chat_id=item.get("chat_id"))
+                if not smtp_full:
+                    continue
+
+                check_count = item.get("check_count", 0)
+                increment_check(key)
+
+                reply = await asyncio.to_thread(
+                    check_whatsapp_reply, smtp_full, item["sent_at"]
+                )
+
+                chat_id = item["chat_id"]
+                phone   = item["phone"]
+                smtp_em = item["smtp_email"]
+
+                if reply:
+                    confirmed = reply.get("confirmed", True)
+
+                    # Jika sudah kirim notif "kemungkinan" sebelumnya, skip — cegah spam
+                    if not confirmed and item.get("maybe_notified"):
+                        logger.debug(f"Skip maybe-notif untuk {key} — sudah pernah dikirim")
+                        continue
+
+                    # Escape semua konten dinamis dari email agar tidak crash Telegram parser
+                    import html as _html  # noqa: PLC0415
+                    def _e(s: str) -> str:
+                        return _html.escape(str(s or "-"))
+
+                    from_safe    = _e(reply.get("from",    "-"))
+                    subject_safe = _e(reply.get("subject", "-"))
+                    date_safe    = _e(reply.get("date",    "-"))
+                    body_safe    = _e(reply.get("body",    "")[:500])
+                    phone_safe   = _e(phone)
+                    smtp_safe    = _e(smtp_em)
+
+                    if confirmed:
+                        header = "📬 <b>EMAIL DIBALAS OLEH WHATSAPP!</b>"
+                        info   = (
+                            "👋 Kabar gembira! Email banding kamu sudah dibalas oleh WhatsApp Support.\n\n"
+                            "Kemungkinan besar nomor kamu sudah berhasil diaktifkan kembali.\n"
+                            "Coba buka WhatsApp dan cek nomornya ya.\n"
+                            "Kalau masih ada kendala, coba banding ulang dengan /fix."
+                        )
+
+                        # Post to Testimonial Channel
+                        u_info = item.get("user_info", "User")
+                        testi_reply_msg = (
+                            f"🎉 *EMAIL BANDING DIBALAS! (SUKSES)* 🎉\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📱 *Nomor:* `{phone}`\n"
+                            f"👤 *User:* {u_info}\n"
+                            f"📧 *SMTP:* `{smtp_em}`\n"
+                            f"📩 *Subject:* {reply.get('subject', '-')}\n"
+                            f"✅ *Keterangan:* Akun kemungkinan besar telah diaktifkan kembali oleh WhatsApp!\n"
+                            f"━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        asyncio.create_task(post_to_testimonial_channel(bot, testi_reply_msg))
+                    else:
+                        header = "📬 <b>ADA EMAIL MASUK DI INBOX!</b>"
+                        info   = (
+                            "⚠️ Ada email masuk di inbox setelah banding dikirim.\n"
+                            "Mungkin ini balasan dari WhatsApp, silakan cek manual.\n\n"
+                            "Kalau bukan balasan WA, abaikan saja.\n"
+                            "Bot akan tetap monitor untuk balasan resmi."
+                        )
+
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                f"{header}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📱 Nomor : <code>{phone_safe}</code>\n"
+                                f"📧 SMTP  : <code>{smtp_safe}</code>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"{info}\n\n"
+                                f"📩 <b>DETAIL EMAIL</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📧 Dari    : {from_safe}\n"
+                                f"📌 Subject : {subject_safe}\n"
+                                f"📅 Tanggal : {date_safe}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"<pre>{body_safe}</pre>"
+                            ),
+                            parse_mode="HTML",
+                        )
+                        if confirmed:
+                            mark_notified(key)
+                        else:
+                            mark_maybe_notified(key)
+                        logger.info(f"Notifikasi balasan terkirim ke {chat_id} untuk {phone} (confirmed={confirmed})")
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(f"Gagal kirim notif ke {chat_id}: {e}")
+
+                elif check_count > 0 and check_count % 20 == 0:
+                    # Setiap 20 check (~30 menit @ 90 detik/check), kirim status update ke user
+                    try:
+                        elapsed_min = round(check_count * 1.5)
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                f"🔍 *Monitor Banding Aktif*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📱 Nomor  : `{phone}`\n"
+                                f"📧 SMTP   : `{smtp_em}`\n"
+                                f"⏱ Elapsed : ±{elapsed_min} menit\n"
+                                f"🔄 Dicek   : {check_count + 1}x\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"ℹ️ Belum ada balasan dari WhatsApp.\n"
+                                f"Bot tetap monitoring setiap 5 menit.\n"
+                                f"Biasanya WhatsApp balas dalam 1–24 jam."
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(f"Gagal kirim status update ke {chat_id}: {e}")
+
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"IMAP monitor error: {e}")
+
+        await asyncio.sleep(90)
+
+
+# ── GitHub Auto-Update ────────────────────────────────────────────────────────
+async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🔍 Memeriksa update dari GitHub...")
+    result = await asyncio.to_thread(check_for_update)
+
+    if "error" in result and not result.get("update_available"):
+        await msg.edit_text(
+            f"❌ *Gagal cek update*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ {result['error']}\n\n"
+            f"💡 Pastikan secret `GH_PAT` sudah diset di GitHub Actions.",
+            parse_mode="Markdown",
+        )
+        return
+
+    current = result.get("current_sha", "?")
+    latest  = result.get("latest_sha", "?")
+    info    = result.get("commit_info", {})
+
+    if not result.get("update_available"):
+        await msg.edit_text(
+            f"✅ *Bot sudah versi terbaru!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 Commit: `{latest}`\n"
+            f"📝 {info.get('message', '-')}\n"
+            f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n"
+            f"⏰ {now_utc()}",
+            parse_mode="Markdown",
+        )
+        return
+
+    await msg.edit_text(
+        f"🔄 *Update ditemukan! Trigger restart...*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Saat ini : `{current}`\n"
+        f"🆕 Terbaru  : `{latest}`\n"
+        f"📝 {info.get('message', '-')}\n"
+        f"👤 {info.get('author', '-')} · {info.get('date', '-')}",
+        parse_mode="Markdown",
+    )
+
+    trig = await asyncio.to_thread(trigger_update)
+    if trig["success"]:
+        await msg.edit_text(
+            f"🚀 *Update berhasil di-trigger!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 Dari : `{current}` → `{latest}`\n"
+            f"📝 {info.get('message', '-')}\n\n"
+            f"⏳ Bot akan restart dalam ~30 detik dengan kode terbaru.",
+            parse_mode="Markdown",
+        )
+    else:
+        await msg.edit_text(
+            f"❌ *Gagal trigger update*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ {trig.get('error', 'Unknown')}\n\n"
+            f"💡 Cek secret `GH_PAT` punya scope `workflow`.",
+            parse_mode="Markdown",
+        )
+
+
+async def auto_update_loop(bot: Bot):
+    logger.info("Auto-update loop dimulai...")
+    current_sha = os.environ.get("GITHUB_SHA", "")
+    if current_sha:
+        await asyncio.to_thread(save_commit, current_sha)
+    await asyncio.sleep(300)
+
+    while True:
+        try:
+            result = await asyncio.to_thread(check_for_update)
+            if result.get("update_available"):
+                latest  = result.get("latest_sha", "?")
+                current = result.get("current_sha", "?")
+                info    = result.get("commit_info", {})
+                logger.info(f"Update tersedia: {current} → {latest}")
+
+                trig = await asyncio.to_thread(trigger_update)
+                if trig["success"] and ADMIN_CHAT:
+                    try:
+                        await bot.send_message(
+                            chat_id=ADMIN_CHAT,
+                            text=(
+                                f"🔄 *Auto-Update Terdeteksi!*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📦 Dari : `{current}` → `{latest}`\n"
+                                f"📝 {info.get('message', '-')}\n"
+                                f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n\n"
+                                f"🚀 Bot restart otomatis dalam ~30 detik."
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(f"Gagal notif auto-update: {e}")
+                elif not trig["success"]:
+                    logger.warning(f"Auto-update trigger gagal: {trig.get('error')}")
+
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Auto-update loop error: {e}")
+
+        await asyncio.sleep(1800)
+
+
+async def ivasms_poll_loop(bot: Bot):
+    logger.info("iVasms polling background loop dimulai...")
+    # Taruh import di dalam agar terisolasi dari global namespace dan ModuleNotFoundError pada startup awal
+    from ivasms import fetch_ivasms_messages, get_user_by_number, log_otp, detect_service, extract_otp
+
+    # Store processed message IDs to prevent double notification within the same run
+    processed_msg_ids = set()
+
+    while True:
+        try:
+            # Fetch latest messages from iVasms Panel
+            messages = await asyncio.to_thread(fetch_ivasms_messages)
+            if messages:
+                for msg in messages:
+                    msg_id = msg["id"]
+                    if msg_id in processed_msg_ids:
+                        continue
+
+                    processed_msg_ids.add(msg_id)
+                    phone = msg["phone"]
+                    text = msg["text"]
+
+                    # Match against active user assignment
+                    chat_id = get_user_by_number(phone)
+                    if chat_id:
+                        otp_code = extract_otp(text)
+                        service_name = detect_service(text)
+
+                        # Log to persistent storage
+                        await asyncio.to_thread(log_otp, phone, otp_code, text, chat_id)
+
+                        # Send notification to User
+                        try:
+                            kb = InlineKeyboardMarkup([
+                                [InlineKeyboardButton(f"🔑 Copy OTP: {otp_code}", callback_data="noop")],
+                                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+                            ])
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    f"🎉 *OTP iVasms Baru Diterima!*\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📱 Nomor: `{phone}`\n"
+                                    f"🌐 Layanan: *{service_name}*\n"
+                                    f"🔑 Code OTP: `{otp_code}`\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"✉️ SMS Full:\n`{text}`"
+                                ),
+                                parse_mode="Markdown",
+                                reply_markup=kb
+                            )
+                            logger.info(f"iVasms OTP successfully forwarded to user {chat_id} for number {phone}")
+                        except Exception as e:
+                            logger.error(f"Gagal mengirim iVasms OTP ke user {chat_id}: {e}")
+
+                        # Send to Testimonial Channel / Group
+                        testimonial_text = (
+                            f"🌐 *iVasms SMS OTP DITERIMA* 🌐\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📱 *Nomor:* `{phone}`\n"
+                            f"🌐 *Layanan:* *{service_name}*\n"
+                            f"🔑 *OTP:* `{otp_code}`\n"
+                            f"✅ *Keterangan:* Sukses menerima OTP dari iVasms Panel!\n"
+                            f"━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        asyncio.create_task(post_to_testimonial_channel(bot, testimonial_text))
+
+        except Exception as e:
+            logger.error(f"Error in ivasms_poll_loop: {e}")
+
+        await asyncio.sleep(45) # check every 45 seconds
+
+
+# ── Callback Query Handler ─────────────────────────────────────────────────────
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query   = update.callback_query
+    await query.answer()
+    data    = query.data
+    chat_id = query.message.chat_id
+
+    # ── Number Management ─────────────────────────────────────────────────────
+    if data == "search_prompt":
+        await query.edit_message_text(
+            "🔍 *Cari Nomor Berdasarkan Prefix*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan ketik perintah `/search <prefix>` di chat ini untuk mencari nomor.\n\n"
+            "Contoh:\n"
+            "• `/search 628` (Mencari nomor Indonesia)\n"
+            "• `/search +228` (Mencari nomor Togo)\n\n"
+            "💡 Bot akan memindai seluruh file .txt nomor yang Anda upload.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]])
+        )
+        return
+
+    elif data == "num_info":
+        # Tampilkan daftar file tersimpan + opsi upload baru
+        await query.edit_message_text("⏳ Memuat daftar file...")
+        files = await asyncio.to_thread(list_files, chat_id)
+
+        if not files:
+            await query.edit_message_text(
+                "📱 *Cek Nomor WhatsApp*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Belum ada file tersimpan.\n\n"
+                "⬆️ *Cara pakai:*\n"
+                "1️⃣ Kirim file `.txt` ke bot ini\n"
+                "2️⃣ Format: satu nomor per baris\n"
+                "3️⃣ Bot pilih 3 nomor acak & cek WA\n\n"
+                "🟢 Hijau = Fresh (belum WA)\n"
+                "🔴 Merah = Sudah terdaftar WA",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+        else:
+            rows = []
+            lines = [
+                "📁 *File Manager Nomor WA*",
+                "━━━━━━━━━━━━━━━━━━━━",
+            ]
+            for i, f in enumerate(files[:15], 1):  # max 15 ditampilkan
+                fname   = f.get("filename", "?")
+                name    = f.get("original_name", fname)[:30]
+                total   = f.get("total", "?")
+                region  = f.get("region", "") or detect_region(name)
+                date_s  = f.get("uploaded_at", "")[:10]  # "YYYY-MM-DD"
+                region_tag = f"  {region}" if region else ""
+                lines.append(f"{i}. `{name}`{region_tag}")
+                lines.append(f"   📊 {total} nomor  📅 {date_s}")
+                rows.append([
+                    InlineKeyboardButton("✅ Cek Acak", callback_data=f"numfile_pick_{fname}"),
+                    InlineKeyboardButton("👁 Lihat",    callback_data=f"numfile_view_{fname}"),
+                    InlineKeyboardButton("🗑 Hapus",    callback_data=f"numfile_del_{fname}"),
+                ])
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"Total: {len(files)} file  |  Upload file .txt baru ke chat")
+            rows.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_main")])
+            await query.edit_message_text(
+                "\n".join(lines),
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+
+    elif data == "connect_wa_info":
+        checker_ok = is_checker_connected(chat_id)
+        if checker_ok:
+            status_text = (
+                f"✅ *WA Checker Terhubung*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🌐 URL: `{WA_CHECKER_URL}`\n\n"
+                f"Bot siap mengecek nomor WhatsApp!"
+            )
+        else:
+            status_text = (
+                "🔗 *Hubungkan WA Checker Anda*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Silakan kirimkan pairing code untuk menghubungkan nomor Anda sebagai Checker WhatsApp.\n\n"
+                "Format: `/pair +628xxxxxxxx`\n\n"
+                "⚠️ Setiap user mendapatkan WA Checker terisolasi miliknya sendiri!"
+            )
+        await query.edit_message_text(
+            status_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]]),
+        )
+
+    elif data == "num_reroll":
+        numbers = _user_numbers.get(chat_id, [])
+        loaded_from = None
+
+        # Fallback: jika in-memory kosong (misal setelah restart), reload dari GitHub
+        if not numbers:
+            await query.edit_message_text("⏳ Memuat ulang file nomor dari storage...")
+            # Coba load file yang terakhir digunakan user ini
+            last_fname = _last_file_by_chat.get(chat_id)
+            if last_fname:
+                raw_lines = await asyncio.to_thread(load_file, last_fname, chat_id)
+                if raw_lines:
+                    numbers = parse_numbers_from_text("\n".join(raw_lines))
+                    if numbers:
+                        _user_numbers[chat_id] = numbers
+                        loaded_from = last_fname
+            # Jika masih kosong, coba file terbaru dari seluruh storage
+            if not numbers:
+                files = await asyncio.to_thread(list_files, chat_id)
+                if files:
+                    for f in files:  # files sudah diurut terbaru dulu
+                        raw_lines = await asyncio.to_thread(load_file, f["filename"], chat_id)
+                        if raw_lines:
+                            numbers = parse_numbers_from_text("\n".join(raw_lines))
+                            if numbers:
+                                _user_numbers[chat_id] = numbers
+                                _last_file_by_chat[chat_id] = f["filename"]
+                                loaded_from = f["filename"]
+                                break
+
+        if not numbers:
+            await query.edit_message_text(
+                "⚠️ Tidak ada daftar nomor.\n\nUpload file .txt atau pilih dari menu 📱 Cek Nomor WA.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📱 Pilih File", callback_data="num_info")],
+                    [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+                ]),
+            )
+            return
+
+        info_msg = f"🔄 Reload dari `{loaded_from}`..." if loaded_from else "🎲 Mengambil nomor acak baru..."
+        await query.edit_message_text(info_msg, parse_mode="Markdown")
+        chosen   = pick_random(numbers, 3)
+        results  = await asyncio.to_thread(check_numbers, chosen, chat_id)
+        text_out = fmt_number_results(results, len(numbers))
+        kb       = build_number_buttons(results, chat_id)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=kb)
+
+    elif data.startswith("numfile_pick_"):
+        filename = data[len("numfile_pick_"):]
+        await query.edit_message_text(f"⏳ Memuat file `{filename}`...", parse_mode="Markdown")
+        raw_lines = await asyncio.to_thread(load_file, filename, chat_id)
+        if not raw_lines:
+            await query.edit_message_text(
+                f"❌ File `{filename}` tidak ditemukan di storage.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Pilih File Lain", callback_data="num_info")
+                ]]),
+            )
+            return
+        numbers = parse_numbers_from_text("\n".join(raw_lines))
+        if not numbers:
+            await query.edit_message_text(
+                f"❌ Tidak ada nomor valid di file `{filename}`.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Pilih File Lain", callback_data="num_info")
+                ]]),
+            )
+            return
+        _user_numbers[chat_id] = numbers
+        _last_file_by_chat[chat_id] = filename   # ← track file terakhir user
+        chosen   = pick_random(numbers, 3)
+        await query.edit_message_text(f"🔍 Mengecek {len(chosen)} nomor dari {len(numbers)}...")
+        results  = await asyncio.to_thread(check_numbers, chosen, chat_id)
+        text_out = fmt_number_results(results, len(numbers))
+        kb       = build_number_buttons(results, chat_id)
+        await query.edit_message_text(text_out, parse_mode="Markdown", reply_markup=kb)
+
+    elif data.startswith("numfile_del_"):
+        filename = data[len("numfile_del_"):]
+        # Minta konfirmasi
+        await query.edit_message_text(
+            f"🗑 *Hapus File?*\n━━━━━━━━━━━━━━━━━━━━\n`{filename}`\n\nYakin ingin menghapus?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Ya, Hapus",    callback_data=f"numfile_confirm_del_{filename}")],
+                [InlineKeyboardButton("❌ Batal",        callback_data="num_info")],
+            ]),
+        )
+
+    elif data.startswith("numfile_confirm_del_"):
+        filename = data[len("numfile_confirm_del_"):]
+        await query.edit_message_text(f"🗑 Menghapus `{filename}`...", parse_mode="Markdown")
+        result = await asyncio.to_thread(delete_file, filename, chat_id)
+        if result["success"]:
+            # Bersihkan cache in-memory jika user ini memakai file ini
+            if _last_file_by_chat.get(chat_id) == filename:
+                _last_file_by_chat.pop(chat_id, None)
+                _user_numbers.pop(chat_id, None)
+            # Refresh daftar file
+            files = await asyncio.to_thread(list_files, chat_id)
+            if not files:
+                await query.edit_message_text(
+                    f"✅ File `{filename}` dihapus.\n\nBelum ada file lain tersimpan.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")
+                    ]]),
+                )
+            else:
+                rows = []
+                lines = [
+                    "✅ File dihapus.",
+                    "",
+                    "📁 *File Manager Nomor WA*",
+                    "━━━━━━━━━━━━━━━━━━━━",
+                ]
+                for i, f in enumerate(files[:15], 1):
+                    fname_  = f.get("filename", "?")
+                    name_   = f.get("original_name", fname_)[:30]
+                    total_  = f.get("total", "?")
+                    region_ = f.get("region", "") or detect_region(name_)
+                    date_s_ = f.get("uploaded_at", "")[:10]
+                    region_tag_ = f"  {region_}" if region_ else ""
+                    lines.append(f"{i}. `{name_}`{region_tag_}")
+                    lines.append(f"   📊 {total_} nomor  📅 {date_s_}")
+                    rows.append([
+                        InlineKeyboardButton("✅ Cek Acak", callback_data=f"numfile_pick_{fname_}"),
+                        InlineKeyboardButton("👁 Lihat",    callback_data=f"numfile_view_{fname_}"),
+                        InlineKeyboardButton("🗑 Hapus",    callback_data=f"numfile_del_{fname_}"),
+                    ])
+                lines.append("━━━━━━━━━━━━━━━━━━━━")
+                lines.append(f"Total: {len(files)} file")
+                rows.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_main")])
+                await query.edit_message_text(
+                    "\n".join(lines),
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(rows),
+                )
+        else:
+            await query.edit_message_text(
+                f"❌ Gagal hapus: {result.get('error', 'Unknown')}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="num_info")
+                ]]),
+            )
+
+    elif data.startswith("numfile_view_"):
+        filename = data[len("numfile_view_"):]
+        await query.edit_message_text(f"⏳ Memuat isi file `{filename}`...", parse_mode="Markdown")
+        raw_lines = await asyncio.to_thread(load_file, filename, chat_id)
+        if not raw_lines:
+            await query.edit_message_text(
+                f"❌ File `{filename}` tidak ditemukan.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="num_info")
+                ]]),
+            )
+            return
+        all_numbers = parse_numbers_from_text("\n".join(raw_lines))
+        preview     = all_numbers[:25]
+        more        = len(all_numbers) - len(preview)
+        lines = [
+            f"👁 *Isi File:* `{filename}`",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"📊 Total: *{len(all_numbers)}* nomor",
+            "━━━━━━━━━━━━━━━━━━━━",
+        ]
+        for num in preview:
+            lines.append(f"• `{num}`")
+        if more > 0:
+            lines.append(f"_...dan {more} nomor lainnya_")
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Cek Acak dari File Ini", callback_data=f"numfile_pick_{filename}")],
+                [InlineKeyboardButton("🔙 Kembali ke Daftar",     callback_data="num_info")],
+            ]),
+        )
+
+    elif data.startswith("copy_num_"):
+        phone = data[len("copy_num_"):]
+        c_info = get_country_info(phone)
+        flag = c_info["flag"]
+        name = c_info["name"]
+
+        await query.edit_message_text(f"⏳ Membuka detail nomor {phone}...")
+        results = await asyncio.to_thread(check_numbers, [phone], chat_id)
+        status_reg = results[0]["registered"]
+
+        if status_reg is False:
+            status_wa_str = "[ *🟢 Fresh* | 🔴 Terdaftar (Linked) | ⚪ Terdaftar (Unlinked) ]"
+        elif status_reg is True:
+            status_wa_str = "[ 🟢 Fresh | *🔴 Terdaftar (Linked)* | ⚪ Terdaftar (Unlinked) ]"
+        else:
+            status_wa_str = "[ 🟢 Fresh | 🔴 Terdaftar (Linked) | *⚪ Terdaftar (Unlinked)* ]"
+
+        method_text = format_gacha_method(phone)
+
+        from number_manager import get_masked_and_prefix
+        masked_num, prefix_val = get_masked_and_prefix(phone)
+
+        # We will keep the detail message clear and elegant
+        detail_msg = (
+            f"📱 *Detail Nomor & Status WA*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📞 *Nomor:* `{phone}`\n"
+            f"🌍 *Negara:* {flag} {name} (+{c_info['code']})\n"
+            f"📊 *Status WA:* {status_wa_str}\n"
+            f"⏰ *Timezone:* {c_info['timezone']}\n"
+            f"🗣️ *Bahasa Device/WA:* {c_info['lang']}\n"
+            f"🌐 *Saran Server VPN:* {c_info['vpn']}\n"
+            f"🔍 *Info Traffic:* `{masked_num}` (😬 Prefix: `{prefix_val}`)\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{method_text}\n\n"
+            f"{format_banding_templates(phone)}"
+        )
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔧 Fix (Banding Ban)", callback_data=f"fix_num_{phone}")],
+            [InlineKeyboardButton("🔙 Kembali ke Hasil", callback_data="num_reroll")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+        ])
+        await query.edit_message_text(detail_msg, parse_mode="Markdown", reply_markup=kb)
+
+    elif data.startswith("fix_num_"):
+        phone = data[len("fix_num_"):]
+
+        accounts = manager.list_accounts(chat_id)
+        verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
+        if not verified:
+            await query.edit_message_text(
+                "❌ *Tidak ada akun SMTP yang aktif!*\n\n"
+                "Tambah dulu dengan:\n"
+                "`/addsmtp email@gmail.com|app_password`\n\n"
+                "⚠️ Catatan: Akun SMTP otomatis (seperti Mail.tm) tidak bisa dipakai kirim email banding.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+            )
+            return
+
+        from number_manager import get_recommended_banding_language
+        rec_lang = get_recommended_banding_language(phone)
+
+        btn_id = "🇮🇩 Indonesia" + (" 🌟" if "Indonesia" in rec_lang else "")
+        btn_en = "🇬🇧 Inggris" + (" 🌟" if "Inggris" in rec_lang else "")
+        btn_ar = "🇸🇦 Arab" + (" 🌟" if "Arab" in rec_lang else "")
+        btn_ru = "🇷🇺 Rusia" + (" 🌟" if "Rusia" in rec_lang else "")
+        btn_fr = "🇫🇷 Prancis" + (" 🌟" if "Prancis" in rec_lang else "")
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(btn_id, callback_data=f"send_fix_id_{phone}")],
+            [InlineKeyboardButton(btn_en, callback_data=f"send_fix_en_{phone}")],
+            [InlineKeyboardButton(btn_ar, callback_data=f"send_fix_ar_{phone}")],
+            [InlineKeyboardButton(btn_ru, callback_data=f"send_fix_ru_{phone}")],
+            [InlineKeyboardButton(btn_fr, callback_data=f"send_fix_fr_{phone}")],
+            [InlineKeyboardButton("🔙 Kembali ke Detail", callback_data=f"copy_num_{phone}")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+        ])
+
+        await query.edit_message_text(
+            f"🌐 *PILIH BAHASA TEMPLATE BANDING*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor: `{phone}`\n"
+            f"💡 *Rekomendasi:* `{rec_lang}`\n\n"
+            f"Silakan pilih bahasa yang ingin Anda gunakan untuk mengirim email banding. "
+            f"Setiap pilihan akan secara otomatis memformat teks banding sesuai bahasa tersebut.",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+
+    elif data.startswith("send_fix_"):
+        parts = data[len("send_fix_"):].split("_", 1)
+        if len(parts) == 2:
+            lang_code, phone = parts
+        else:
+            lang_code, phone = "en", data[len("send_fix_"):]
+
+        global _last_smtp_index
+        accounts = manager.list_accounts(chat_id)
+        verified = [a for a in accounts if a.get("verified") and not a.get("email", "").endswith("@web-library.net") and "mail.tm" not in a.get("email", "")]
+        if not verified:
+            await query.edit_message_text(
+                "❌ *Tidak ada akun SMTP yang aktif!*\n\n"
+                "Tambah dulu dengan:\n"
+                "`/addsmtp email@gmail.com|app_password`\n\n"
+                "⚠️ Catatan: Akun SMTP otomatis (seperti Mail.tm) tidak bisa dipakai kirim email banding.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+            )
+            return
+
+        idx = _last_smtp_index % len(verified)
+        smtp_email = verified[idx]["email"]
+        _last_smtp_index = (idx + 1) % len(verified)
+
+        smtp_full  = manager.get_account(smtp_email, chat_id)
+        if not smtp_full:
+            await query.edit_message_text("❌ Gagal ambil data akun SMTP.", parse_mode="Markdown")
+            return
+
+        lang_name_map = {
+            "id": "Indonesia 🇮🇩",
+            "en": "Inggris 🇬🇧",
+            "ar": "Arab 🇸🇦",
+            "ru": "Rusia 🇷🇺",
+            "fr": "Prancis 🇫🇷"
+        }
+        chosen_lang_name = lang_name_map.get(lang_code, "Inggris 🇬🇧")
+
+        await query.edit_message_text(
+            f"📤 *Mengirim email banding...*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor: `{phone}`\n"
+            f"🌐 Bahasa: `{chosen_lang_name}`\n"
+            f"📧 SMTP: `{smtp_email}`\n"
+            f"Target: `support@support.whatsapp.com`",
+            parse_mode="Markdown"
+        )
+
+        raw_tpl = BANDING_TEMPLATES_RAW.get(lang_code, BANDING_TEMPLATES_RAW["en"])
+        custom_body = raw_tpl.format(phone=phone)
+        custom_subject = f"[Unban Request] My phone number {phone}"
+
+        sent_at = time.time()
+        result  = await asyncio.to_thread(send_appeal_email, smtp_full, phone, custom_subject, custom_body)
+
+        if not result["success"]:
+            await query.edit_message_text(
+                f"❌ *Gagal Kirim Email Banding*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 Nomor: `{phone}`\n"
+                f"⚠️ Error: {result.get('error', 'Unknown')}\n\n"
+                f"💡 Cek App Password atau coba akun SMTP lain.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+            )
+            return
+
+        user = query.from_user
+        user_info = f"@{user.username}" if user and user.username else (f"{user.first_name}" if user else "User")
+        add_pending(chat_id, phone, smtp_email, sent_at, user_info)
+
+        # Construct success message showing alias and sending count if available
+        alias_used = result.get("alias", smtp_email)
+        alias_count = result.get("count", 0)
+
+        alias_info = ""
+        if alias_count > 0:
+            alias_info = f"👤 Alias: `{alias_used}` *(Pengiriman ke-{alias_count} hari ini)*\n"
+
+        await query.edit_message_text(
+            f"📬 *EMAIL BANDING TERKIRIM!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 Nomor : `{phone}`\n"
+            f"📧 SMTP  : `{smtp_email}`\n"
+            f"{alias_info}"
+            f"🌐 Bahasa: `{chosen_lang_name}`\n"
+            f"✅ Status : Banding berhasil terkirim!\n\n"
+            f"🤖 *INFO*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Bot akan monitor inbox secara otomatis.\n"
+            f"Kamu akan dinotifikasi jika ada balasan dari WhatsApp.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Kembali ke Detail", callback_data=f"copy_num_{phone}")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+            ])
+        )
+
+        # Post to Testimonial Channel
+        alias_testi_line = f"👤 *Alias:* `{alias_used}` *(Ke-{alias_count} hari ini)*\n" if alias_count > 0 else ""
+        testi_msg = (
+            f"🚀 *NOTIF BANDING TERKIRIM* 🚀\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 *Nomor:* `{phone}`\n"
+            f"👤 *User:* {user_info}\n"
+            f"📧 *SMTP:* `{smtp_email}`\n"
+            f"{alias_testi_line}"
+            f"🌐 *Bahasa:* `{chosen_lang_name}`\n"
+            f"✅ *Status:* Email banding sukses dikirim ke WhatsApp Support!\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
+        await post_to_testimonial_channel(context.bot, testi_msg)
+
+    # ── Email Temp ────────────────────────────────────────────────────────────
+    elif data == "gen":
+        await query.edit_message_text("⏳ Generate email sementara...")
+        result = await asyncio.to_thread(generator.generate_random)
+        if result["success"]:
+            context.user_data["last_temp_email"] = result["data"]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Cek Inbox", callback_data="check_inbox_temp")],
+                [InlineKeyboardButton("🔄 Generate Lagi",  callback_data="gen")],
+                [InlineKeyboardButton("🏠 Menu Utama",     callback_data="back_main")],
+            ])
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+        await query.edit_message_text(
+            fmt_tempmail(result), parse_mode="Markdown",
+            reply_markup=kb,
+        )
+
+    elif data == "menu_provider":
+        await query.edit_message_text(
+            "🔧 *Pilih Provider Email Temp:*",
+            parse_mode="Markdown", reply_markup=provider_keyboard(),
+        )
+
+    elif data.startswith("prov_"):
+        provider = data[5:]
+        await query.edit_message_text(f"⏳ Generate dari *{provider}*...", parse_mode="Markdown")
+        result = await asyncio.to_thread(generator.generate_by_provider, provider)
+        if result["success"]:
+            context.user_data["last_temp_email"] = result["data"]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Cek Inbox", callback_data="check_inbox_temp")],
+                [InlineKeyboardButton("🔄 Generate Lagi",  callback_data=f"prov_{provider}")],
+                [InlineKeyboardButton("📋 Ganti Provider", callback_data="menu_provider")],
+                [InlineKeyboardButton("🏠 Menu Utama",     callback_data="back_main")],
+            ])
+        else:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]])
+        await query.edit_message_text(
+            fmt_tempmail(result), parse_mode="Markdown",
+            reply_markup=kb,
+        )
+
+    elif data == "check_inbox_temp":
+        last_email = context.user_data.get("last_temp_email")
+        if not last_email:
+            await query.edit_message_text(
+                "❌ *Tidak ada email aktif.*\nSilakan generate email baru terlebih dahulu.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]]),
+            )
+            return
+
+        provider = last_email.get("provider", "")
+        email_addr = last_email.get("email", "")
+        await query.edit_message_text(
+            f"📥 *Mengecek Inbox...*\n📧 Email: `{email_addr}`\n🔖 Provider: *{provider}*",
+            parse_mode="Markdown",
+        )
+
+        messages = await asyncio.to_thread(generator.check_inbox, last_email)
+        if not messages:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh Inbox", callback_data="check_inbox_temp")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+            ])
+            await query.edit_message_text(
+                f"📭 *Inbox Kosong*\n\n📧 Email: `{email_addr}`\n\nBelum ada email masuk. Silakan kirim email ke alamat di atas lalu klik Refresh.",
+                parse_mode="Markdown",
+                reply_markup=kb,
+            )
+            return
+
+        # List messages (max 5)
+        lines = [
+            f"📥 *Inbox untuk:* `{email_addr}`",
+            f"📊 Total: *{len(messages)}* email baru",
+            "━━━━━━━━━━━━━━━━━━━━\n",
+        ]
+        rows = []
+        for i, msg in enumerate(messages[:5], 1):
+            sub = msg.get("subject", "No Subject")[:35]
+            lines.append(f"✉️ *{i}. Dari:* `{msg.get('from')}`")
+            lines.append(f"📌 *Sub:* _{sub}_")
+            lines.append(f"📅 *Date:* {msg.get('date')}\n")
+
+            rows.append([InlineKeyboardButton(f"📖 Baca Email #{i}", callback_data=f"read_temp_{msg.get('id')}")])
+
+        rows.append([InlineKeyboardButton("🔄 Refresh Inbox", callback_data="check_inbox_temp")])
+        rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
+    elif data.startswith("read_temp_"):
+        msg_id = data[len("read_temp_"):]
+        last_email = context.user_data.get("last_temp_email")
+        if not last_email:
+            await query.edit_message_text(
+                "❌ Email tidak aktif.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]]),
+            )
+            return
+
+        await query.edit_message_text("⏳ Membaca email...")
+        msg = await asyncio.to_thread(generator.read_message, last_email, msg_id)
+        if not msg:
+            await query.edit_message_text(
+                "❌ Gagal memuat detail email.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Kembali ke Inbox", callback_data="check_inbox_temp")]]),
+            )
+            return
+
+        body = msg.get("body", "")
+        # Limit to 3000 chars to avoid Telegram message limits
+        if len(body) > 3000:
+            body = body[:3000] + "\n\n...[Teks Terpotong]..."
+
+        lines = [
+            "📧 *Detail Email Masuk*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"👤 *Dari:* `{msg.get('from')}`",
+            f"📌 *Subject:* {msg.get('subject')}",
+            f"📅 *Tanggal:* {msg.get('date')}",
+            "━━━━━━━━━━━━━━━━━━━━\n",
+            f"{body}",
+        ]
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Kembali ke Inbox", callback_data="check_inbox_temp")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")],
+            ]),
+        )
+
+    # ── SMTP Manual ───────────────────────────────────────────────────────────
+    elif data == "add_smtp_info":
+        await query.edit_message_text(
+            "➕ *Tambah SMTP Manual*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Kirim di chat:\n"
+            "`/addsmtp email@gmail.com|app_password`\n\n"
+            "📌 Gmail App Password:\n"
+            "myaccount.google.com/apppasswords\n\n"
+            "✅ Bot verifikasi koneksi sebelum simpan.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]]),
+        )
+
+    elif data == "list_smtp":
+        accounts = manager.list_accounts(chat_id)
+        if not accounts:
+            text = "📭 *Belum ada akun SMTP manual.*\n\nTambah: `/addsmtp email|password`"
+        else:
+            lines = ["📂 *Akun SMTP Manual*\n━━━━━━━━━━━━━━━━━━━━"]
+            for i, a in enumerate(accounts, 1):
+                ok = "✅" if a["verified"] else "⚠️"
+                lines.append(f"{i}. {ok} `{a['email']}`\n   🌐 {a['smtp_host']}:{a['smtp_port']}")
+            lines.append(f"\nTotal: {len(accounts)}")
+            text = "\n".join(lines)
+        await query.edit_message_text(
+            text, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Tambah Baru", callback_data="add_smtp_info")],
+                [InlineKeyboardButton("🔙 Kembali",     callback_data="back_main")],
+            ]),
+        )
+
+    elif data == "howto":
+        await query.edit_message_text(
+            "📖 *Panduan Bot*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📱 *Cek Nomor WA*\n"
+            "• Upload file `.txt` berisi nomor\n"
+            "• Bot pilih 3 acak & cek status WA\n"
+            "• 🟢 Hijau = fresh, 🔴 Merah = terdaftar WA\n\n"
+            "📧 *Email Temp* — Receive Only\n"
+            "• Langsung jadi, tidak perlu setup\n"
+            "• Hanya bisa MENERIMA via website\n\n"
+            "➕ *SMTP Manual* — Akun Sendiri\n"
+            "• Masukkan Gmail + App Password\n"
+            "• Diverifikasi sebelum disimpan\n"
+            "• Bisa KIRIM & TERIMA",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]]),
+        )
+
+    elif data == "status":
+        checker_ok = is_checker_connected(chat_id)
+        ch_status  = "✅ Terhubung" if checker_ok else "⚠️ Belum setup"
+        await query.edit_message_text(
+            f"📊 *Status Bot*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🟢 Bot: Online\n"
+            f"⏰ {now_utc()}\n"
+            f"🆔 Run ID: `{RUN_ID}`\n"
+            f"📱 WA Checker: {ch_status}\n"
+            f"📧 Provider Temp: {len(generator.list_providers())}\n"
+            f"📂 Akun Manual: {manager.count()}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]]),
+        )
+
+    elif data == "check_update":
+        await query.edit_message_text("🔍 Memeriksa update dari GitHub...")
+        result = await asyncio.to_thread(check_for_update)
+
+        if "error" in result and not result.get("update_available"):
+            await query.edit_message_text(
+                f"❌ *Gagal cek update*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ {result['error']}\n\n"
+                f"💡 Pastikan secret `GH_PAT` sudah diset di GitHub Actions.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+            return
+
+        current = result.get("current_sha", "?")
+        latest  = result.get("latest_sha", "?")
+        info    = result.get("commit_info", {})
+
+        if not result.get("update_available"):
+            await query.edit_message_text(
+                f"✅ *Bot sudah versi terbaru!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📌 Commit: `{latest}`\n"
+                f"📝 {info.get('message', '-')}\n"
+                f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n"
+                f"⏰ {now_utc()}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+            return
+
+        trig = await asyncio.to_thread(trigger_update)
+        if trig["success"]:
+            await query.edit_message_text(
+                f"🚀 *Update berhasil di-trigger!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 Dari : `{current}` → `{latest}`\n"
+                f"📝 {info.get('message', '-')}\n"
+                f"👤 {info.get('author', '-')} · {info.get('date', '-')}\n\n"
+                f"⏳ Bot restart dalam ~30 detik dengan kode terbaru.",
+                parse_mode="Markdown",
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ *Gagal trigger update*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 Ada update: `{current}` → `{latest}`\n"
+                f"⚠️ {trig.get('error', 'Unknown')}\n\n"
+                f"💡 Cek secret `GH_PAT` punya scope `workflow`.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+                ]]),
+            )
+
+    # ── Auto Generate SMTP ────────────────────────────────────────────────────
+    elif data == "autogen_smtp":
+        await query.edit_message_text(
+            "🤖 *Auto Generate SMTP*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Bot akan otomatis membuat akun SMTP/API via backend — "
+            "tanpa perlu input manual apapun.\n\n"
+            "📌 *Pilih provider:*\n\n"
+            "🌐 *Mail.tm* — gratis, tanpa token, langsung jadi\n"
+            "📬 *MailerSend* — butuh `MAILERSEND_API_KEY` & `MAILERSEND_SENDER_EMAIL` di env\n\n"
+            "Klik tombol di bawah untuk mulai generate:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌐 Generate via Mail.tm",   callback_data="autogen_mailtm")],
+                [InlineKeyboardButton("📬 Generate via MailerSend",  callback_data="autogen_mailersend")],
+                [InlineKeyboardButton("🔙 Kembali",                callback_data="back_main")],
+            ]),
+        )
+
+    elif data in ("autogen_mailtm", "autogen_mailersend"):
+        provider = "mailtm" if data == "autogen_mailtm" else "mailersend"
+        pname    = "Mail.tm" if provider == "mailtm" else "MailerSend"
+        await query.edit_message_text(
+            f"⏳ *Auto-generate SMTP via {pname}...*\nMohon tunggu...",
+            parse_mode="Markdown",
+        )
+        result = await asyncio.to_thread(auto_gen_smtp, provider)
+        if not result["success"]:
+            await query.edit_message_text(
+                f"❌ *Generate Gagal*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️ {result.get('error', 'Unknown error')}\n\n"
+                f"💡 {'Pastikan `MAILERSEND_API_KEY` dan `MAILERSEND_SENDER_EMAIL` diset di env.' if provider == 'mailersend' else 'Coba lagi atau pilih provider lain.'}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Coba Lagi",  callback_data=data)],
+                    [InlineKeyboardButton("🔙 Kembali",    callback_data="autogen_smtp")],
+                ]),
+            )
+            return
+        save_result = await asyncio.to_thread(manager.add_auto_generated, result)
+        if not save_result["success"]:
+            await query.edit_message_text(
+                f"❌ *Gagal simpan akun*\n{save_result.get('error', '')}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Kembali", callback_data="autogen_smtp")
+                ]]),
+            )
+            return
+        key = save_result.get("email", result.get("key", "-"))
+        await query.edit_message_text(
+            f"✅ *SMTP Auto-Generate Berhasil!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔖 Provider : `{result.get('provider', pname)}`\n"
+            f"👤 Key/User : `{key}`\n"
+            f"🔑 Password : `{result.get('password', '-')}`\n"
+            f"📤 SMTP     : `{result.get('smtp_host')}:{result.get('smtp_port')}`\n"
+            f"📥 IMAP     : `{result.get('imap_host')}:{result.get('imap_port')}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 {result.get('note', '')}\n\n"
+            f"💾 Tersimpan otomatis & siap digunakan!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🤖 Generate Lagi",    callback_data=data)],
+                [InlineKeyboardButton("📂 Lihat Akun SMTP", callback_data="list_smtp")],
+                [InlineKeyboardButton("🏠 Menu Utama",       callback_data="back_main")],
+            ]),
+        )
+
+    elif data == "fix_info":
+        await query.edit_message_text(
+            "🔧 *WhatsApp Fix — Banding Ban*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Gunakan command:\n"
+            "`/fix +628xxxxxxxx`\n\n"
+            "Contoh:\n"
+            "`/fix +6281234567890`\n\n"
+            "📌 Bot akan:\n"
+            "1️⃣ Kirim email banding ke WhatsApp Support\n"
+            "2️⃣ Monitor inbox IMAP untuk balasan\n"
+            "3️⃣ Notifikasi kamu otomatis saat ada balasan\n\n"
+            "💡 Pastikan sudah ada SMTP manual: `/addsmtp`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Kembali", callback_data="back_main")
+            ]]),
+        )
+
+    elif data == "donasi":
+        await cmd_donasi(update, context)
+
+    elif data == "back_main":
+        checker_ok = is_checker_connected(chat_id)
+        ch_label   = "✅ WA Checker terhubung" if checker_ok else "⚠️ WA Checker belum diset"
+        await query.edit_message_text(
+            f"🤖 *Bot Management Nomor & SMTP*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 {ch_label}\n\n"
+            f"Pilih menu:",
+            parse_mode="Markdown",
+            reply_markup=main_menu_keyboard(chat_id),
+        )
+
+    # ── iVasms Callback Query Handlers ────────────────────────────────────────
+    elif data == "ivasms_main":
+        from ivasms import get_assignment, list_combos
+        from number_manager import get_country_info, COUNTRY_DATA
+
+        assign = get_assignment(chat_id)
+        if assign:
+            phone = assign["phone"]
+            c_info = get_country_info(phone)
+            flag = c_info["flag"]
+            name = c_info["name"]
+            assigned_dt = datetime.fromtimestamp(assign["assigned_at"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            text = (
+                f"🌍 *iVasms Temp Number & OTP*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📱 *Nomor Aktif:* `{phone}`\n"
+                f"🌍 *Negara:* {flag} {name}\n"
+                f"📅 *Ditugaskan:* `{assigned_dt}`\n\n"
+                f"⏳ *Status:* Menunggu OTP... Bot akan secara otomatis mengirimkan pesan baru ke sini saat SMS diterima di panel iVasms."
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Batalkan / Lepas Nomor", callback_data="ivasms_release")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")]
+            ])
+        else:
+            combos = list_combos()
+            lines = [
+                "🌍 *iVasms Temp Number & OTP*",
+                "━━━━━━━━━━━━━━━━━━━━",
+                "Silakan pilih negara di bawah ini untuk mendapatkan nomor sementara baru:",
+            ]
+
+            rows = []
+            row = []
+            for code, num_list in combos.items():
+                if not num_list:
+                    continue
+                c_data = COUNTRY_DATA.get(code, {"flag": "🌍", "name": f"Region (+{code})"})
+                btn_text = f"{c_data['flag']} {c_data['name']} ({len(num_list)})"
+                row.append(InlineKeyboardButton(btn_text, callback_data=f"ivasms_get_{code}"))
+                if len(row) == 2:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+
+            # Admin button
+            is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+            if is_admin:
+                rows.append([InlineKeyboardButton("🔐 Admin Panel iVasms", callback_data="ivasms_admin")])
+
+            rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back_main")])
+            kb = InlineKeyboardMarkup(rows)
+            text = "\n".join(lines)
+
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_release":
+        from ivasms import release_number
+        await asyncio.to_thread(release_number, chat_id)
+        await query.answer("✅ Nomor berhasil dilepas!")
+        # Redirect back to main
+        query.data = "ivasms_main"
+        await button_handler(update, context)
+
+    elif data.startswith("ivasms_get_"):
+        code = data[len("ivasms_get_"):]
+        from ivasms import assign_number
+        from number_manager import get_country_info
+
+        assign = await asyncio.to_thread(assign_number, chat_id, code)
+        if not assign:
+            await query.edit_message_text(
+                "❌ *Gagal Alokasi Nomor*\n━━━━━━━━━━━━━━━━━━━━\n\nTidak ada nomor yang tersedia untuk negara ini saat ini.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
+                ])
+            )
+            return
+
+        phone = assign["phone"]
+        c_info = get_country_info(phone)
+        flag = c_info["flag"]
+        name = c_info["name"]
+
+        text = (
+            f"✅ *Nomor Berhasil Dialokasikan!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 *Nomor:* `{phone}`\n"
+            f"🌍 *Negara:* {flag} {name}\n\n"
+            f"⏳ *Status:* Menunggu OTP... Bot akan mendeteksi OTP secara real-time dan langsung memberi tahu Anda!"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Batalkan / Lepas Nomor", callback_data="ivasms_release")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
+        ])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_admin":
+        is_admin = str(chat_id) == ADMIN_CHAT or str(chat_id) in os.environ.get("ADMIN_IDS", "").split(",")
+        if not is_admin:
+            await query.answer("⚠️ Akses ditolak. Hanya untuk Admin.", show_alert=True)
+            return
+
+        text = (
+            "🔐 *Admin Panel iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Kelola kredensial panel dan stock combo nomor iVasms."
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Tambah Combo Nomor", callback_data="ivasms_addcombo_prompt")],
+            [InlineKeyboardButton("🗑️ Hapus Combo Negara", callback_data="ivasms_delcombo_prompt")],
+            [InlineKeyboardButton("⚙️ Set Kredensial Panel", callback_data="ivasms_creds_prompt")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_main")]
+        ])
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    elif data == "ivasms_addcombo_prompt":
+        await query.edit_message_text(
+            "📥 *Tambah Combo Nomor*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan kirimkan format berikut di chat:\n"
+            "`/addcombo <kode_negara> <nomor1,nomor2,...>`\n\n"
+            "Contoh:\n"
+            "`/addcombo 62 +628123456,+6281234567`\n\n"
+            "Atau upload file `.txt` nomor terlebih dahulu, lalu ketik `/addcombo <kode_negara>` untuk mengimpor dari file tersebut.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Batal", callback_data="ivasms_admin")
+            ]])
+        )
+
+    elif data == "ivasms_delcombo_prompt":
+        from ivasms import list_combos
+        combos = list_combos()
+
+        lines = [
+            "🗑️ *Hapus Combo Negara*",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "Pilih combo negara yang ingin Anda hapus secara permanen:",
+        ]
+        rows = []
+        for code, num_list in combos.items():
+            from number_manager import COUNTRY_DATA
+            c_data = COUNTRY_DATA.get(code, {"flag": "🌍", "name": f"Region (+{code})"})
+            btn_text = f"🗑️ {c_data['flag']} {c_data['name']} ({len(num_list)})"
+            rows.append([InlineKeyboardButton(btn_text, callback_data=f"ivasms_del_{code}")])
+
+        rows.append([InlineKeyboardButton("🔙 Kembali", callback_data="ivasms_admin")])
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
+    elif data.startswith("ivasms_del_"):
+        code = data[len("ivasms_del_"):]
+        from ivasms import delete_combo
+        await asyncio.to_thread(delete_combo, code)
+        await query.answer(f"✅ Combo {code} berhasil dihapus!")
+        query.data = "ivasms_delcombo_prompt"
+        await button_handler(update, context)
+
+    elif data == "ivasms_creds_prompt":
+        await query.edit_message_text(
+            "⚙️ *Set Kredensial Panel iVasms*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Silakan kirimkan kredensial dalam format berikut di chat:\n"
+            "`/setivasms email|password|base_url`\n\n"
+            "Contoh:\n"
+            "`/setivasms admin@example.com|securepass|https://ivas.tempnum.qzz.io`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Batal", callback_data="ivasms_admin")
+            ]])
+        )
+
+
+# ── Startup Notification ───────────────────────────────────────────────────────
+_STARTUP_NOTIF_FILE = Path(__file__).parent / ".last_startup_run_id"
+
+
+def _should_send_startup_notif() -> bool:
+    """Hanya kirim startup notif jika RUN_ID ini berbeda dari terakhir kali."""
+    if RUN_ID == "local":
+        return True  # lokal selalu kirim
+    try:
+        if _STARTUP_NOTIF_FILE.exists():
+            last = _STARTUP_NOTIF_FILE.read_text().strip()
+            if last == RUN_ID:
+                return False  # sudah terkirim untuk run ini
+        _STARTUP_NOTIF_FILE.write_text(RUN_ID)
+        return True
+    except Exception:  # noqa: BLE001
+        return True
+
+
+async def send_startup_notification(bot: Bot):
+    if not ADMIN_CHAT:
+        return
+    if not _should_send_startup_notif():
+        logger.info("Startup notif skip — sudah terkirim untuk run ini.")
+        return
+    checker_ok = is_checker_connected()
+    ch_info    = f"✅ WA Checker: `{WA_CHECKER_URL}`" if checker_ok else "⚠️ WA Checker belum setup"
+    ms_status  = "✅ MAILERSEND_API_KEY tersedia" if MAILERSEND_API_KEY else "⚠️ MAILERSEND_API_KEY belum diset"
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_CHAT,
+            text=(
+                "🚀 *Bot Management Nomor & SMTP Aktif!*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏰ *Waktu:* {now_utc()}\n"
+                f"🆔 *Run ID:* `{RUN_ID}`\n"
+                f"📦 *Repo:* `{REPO}`\n"
+                f"📱 {ch_info}\n"
+                f"📬 {ms_status}\n"
+                f"📧 Provider Temp: {len(generator.list_providers())}\n"
+                f"📂 Akun SMTP: {manager.count()}\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "✅ Bot siap menerima perintah!"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Notif startup gagal: {e}")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("generate",    cmd_generate))
+    app.add_handler(CommandHandler("addsmtp",     cmd_addsmtp))
+    app.add_handler(CommandHandler("listsmtp",    cmd_listsmtp))
+    app.add_handler(CommandHandler("delsmtp",     cmd_delsmtp))
+    app.add_handler(CommandHandler("status",      cmd_status))
+    app.add_handler(CommandHandler("help",        cmd_help))
+    app.add_handler(CommandHandler("fix",         cmd_fix))
+    app.add_handler(CommandHandler("donasi",      cmd_donasi))
+    app.add_handler(CommandHandler("autogen",     cmd_autogen))
+    app.add_handler(CommandHandler("update",      cmd_update))
+    app.add_handler(CommandHandler("pair",        cmd_pair))
+    app.add_handler(CommandHandler("search",      cmd_search))
+    app.add_handler(CommandHandler("ivasms",      cmd_ivasms))
+    app.add_handler(CommandHandler("addcombo",    cmd_addcombo))
+    app.add_handler(CommandHandler("setivasms",   cmd_setivasms))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    # Handler untuk upload file .txt
+    app.add_handler(MessageHandler(filters.Document.MimeType("text/plain"), handle_document))
+
+    async def post_init(application: Application):
+        await send_startup_notification(application.bot)
+        await application.bot.set_my_commands([
+            BotCommand("start",       "Menu utama"),
+            BotCommand("generate",    "📧 Email sementara (receive only)"),
+            BotCommand("addsmtp",     "➕ Tambah SMTP manual (Gmail/Yahoo)"),
+            BotCommand("listsmtp",    "📂 Lihat semua akun SMTP"),
+            BotCommand("delsmtp",     "🗑 Hapus akun SMTP"),
+            BotCommand("fix",         "🔧 Banding ban WhatsApp"),
+            BotCommand("autogen",     "🤖 Auto generate SMTP via backend"),
+            BotCommand("pair",        "🔗 Tautkan WhatsApp Checker via Pairing Code"),
+            BotCommand("search",      "🔍 Cari nomor berdasarkan prefix"),
+            BotCommand("ivasms",      "🌍 iVasms Temp Numbers & OTP"),
+            BotCommand("update",      "🔄 Cek & update bot dari GitHub"),
+            BotCommand("status",      "📊 Status bot"),
+            BotCommand("help",        "❓ Bantuan"),
+        ])
+        asyncio.create_task(imap_monitor_loop(application.bot))
+        asyncio.create_task(auto_update_loop(application.bot))
+        asyncio.create_task(ivasms_poll_loop(application.bot))
+
+    app.post_init = post_init
+    logger.info("Bot mulai polling...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()

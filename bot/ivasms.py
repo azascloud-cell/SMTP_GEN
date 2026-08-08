@@ -4,7 +4,6 @@ Semua data (combos, user assignments, logs, credentials) disimpan di data/ivasms
 dan disinkronkan ke GitHub secara otomatis menggunakan pattern storage.py.
 """
 
-import base64
 import json
 import logging
 import os
