@@ -228,12 +228,31 @@ app.get('/pair', async (req, res) => {
     }
 
     try {
-        const session = await getOrCreateSocket(chatId, phone);
+        // Use getOrCreateSocket without phone argument to avoid duplicate triggerPairing scheduled logic
+        const session = await getOrCreateSocket(chatId);
         if (session.sock.authState.creds.registered) {
             return res.status(400).json({ error: "WhatsApp session is already linked for this user." });
         }
         const cleanPhone = phone.replace(/[^\d]/g, '');
-        const code = await session.sock.requestPairingCode(cleanPhone);
+
+        let code;
+        let lastError;
+        // Retry requesting pairing code up to 5 times (total of ~10 seconds) with 2s interval
+        for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+                code = await session.sock.requestPairingCode(cleanPhone);
+                break;
+            } catch (err) {
+                lastError = err;
+                console.log(`[Chat ${chatId}] Attempt ${attempt} to request pairing code failed: ${err.message}. Retrying in 2 seconds...`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+
+        if (!code) {
+            throw lastError || new Error("Failed to generate pairing code after multiple attempts. Please ensure the WhatsApp Checker is connected and try again.");
+        }
+
         return res.json({ success: true, code: code, phone: cleanPhone });
     } catch (err) {
         console.error(`[Chat ${chatId}] Error in /pair:`, err);

@@ -11,7 +11,6 @@ Fix v2:
 """
 
 import email as email_lib
-import html as html_lib
 import imaplib
 import logging
 import re
