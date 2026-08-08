@@ -25,7 +25,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 WA_CHECKER_URL = os.environ.get("WA_CHECKER_URL", "").rstrip("/")
-TIMEOUT = 30
+TIMEOUT = 5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,9 +141,14 @@ def check_numbers(phones: list[str], chat_id: int = None) -> list[dict]:
       {"phone": "+628...", "registered": True/False/None}
     """
     results = []
+    checker_active = is_checker_connected(chat_id) if chat_id is not None else True
+
     for phone in phones:
-        registered = check_wa_registered(phone, chat_id)
-        results.append({"phone": phone, "registered": registered})
+        if not checker_active:
+            results.append({"phone": phone, "registered": None})
+        else:
+            registered = check_wa_registered(phone, chat_id)
+            results.append({"phone": phone, "registered": registered})
     return results
 
 
